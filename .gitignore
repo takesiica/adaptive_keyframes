@@ -1,0 +1,6 @@
+venv/
+.venv/
+.pyc
+*.mp4
+__pycache__/
+./evaluation/*.mp4

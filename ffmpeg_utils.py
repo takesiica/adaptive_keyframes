@@ -17,6 +17,7 @@ def encode_adaptive_GOP(input_path, output_path, keyframes):
         "-crf", "23",
         "-preset", "medium",
         "-bf", "3",
+        "-threads", "1",
 
         # x264 ne sme sam da dodaje scene-cut I-frameove
         "-sc_threshold", "0",
@@ -36,11 +37,11 @@ def encode_fixed_GOP(input_path, output_path):
         "ffmpeg",
         "-y",
         "-i", input_path,
-
         "-c:v", "libx264",
         "-crf", "23",
         "-preset", "medium",
         "-bf", "3",
+        "-threads", "1",
 
         # I-frame na svakih 60 frejmova
         "-g", "60",
@@ -65,6 +66,36 @@ def encode_default(input_path, output_path):
         "-crf", "23",
         "-preset", "medium",
         "-bf", "3",
+        "-threads", "1",
+
+        "-c:a", "copy",
+        output_path
+    ]
+
+    subprocess.run(command, check=True)
+    
+def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
+
+    force_keyframes = "+".join(
+        f"eq(n,{frame})" for frame in keyframes
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+
+        "-c:v", "libx264",
+        "-crf", "23",
+        "-preset", "medium",
+        "-bf", "3",
+
+        # Ne dozvoljavamo x264-u da sam ubacuje scene-cut I-frameove
+        "-sc_threshold", "0",
+
+        # I-frame samo na početku detektovanih scena
+        "-force_key_frames",
+        f"expr:{force_keyframes}",
 
         "-c:a", "copy",
         output_path
@@ -241,3 +272,26 @@ def get_decoding_time(video_path, repetitions = 5):
     average_time = sum(times) / len(times)
 
     return average_time
+
+def create_720p(input_path, output_path):
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+
+        "-vf", "scale=-2:720",
+
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "23",
+        "-threads", "1",
+
+        "-c:a", "copy",
+
+        output_path
+    ]
+
+    subprocess.run(command, check=True)
+    
+

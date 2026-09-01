@@ -1,19 +1,40 @@
 import cv2
 import numpy as np
-from functions import (adaptive_threshold1, scene_dynamics, interval_for_score, generate_keyframes)
+from functions import (adaptive_threshold1, scene_dynamics, interval_for_score, generate_keyframes, generate_keyframes_by_scene, combine_sad_histogram)
 from ffmpeg_utils import (encode_adaptive_GOP, encode_fixed_GOP, encode_default, get_video_metrics, get_psnr, get_ssim, get_decoding_time)
 
 
 if __name__ == "__main__":
 
-    input_path = ".\\input.mp4"
+    input_path = ".\\evaluation\\test6.mp4"
     output_path1 = ".\\output1.mp4"
     output_path2 = ".\\output2.mp4"
     output_path3 = ".\\output3.mp4"
 
     # 1. Scene detection
-    scene_changes, all_mean_sads, thresholds, frame_indices = adaptive_threshold1(
-        input_path, window_size = 45, threshold_factor = 4.0, min_sad = 5.0, peak_multiplier = 1.5)
+    
+    #scene detection sa adaptive thresholdom
+    '''scene_changes, all_mean_sads, thresholds, frame_indices = adaptive_threshold1(
+        input_path, window_size = 45, threshold_factor = 4.0, min_sad = 5.0, peak_multiplier = 1.5) '''
+        
+    #scene detection hist thresh combined
+    (scene_changes, sad, hist, combined, combined_thresholds, frame_indices, weights_sad, weights_hist) = combine_sad_histogram(
+    
+            input_path,
+            window_size=30,
+    
+            sad_threshold_factor=3.0,
+            min_sad=5.0,
+            sad_peak_multiplier=2.6,
+    
+            hist_threshold_factor=4.0,
+            min_hist_diff=0.05,
+            hist_peak_multiplier=1.5,
+            min_peak_diff=0.5,
+    
+            sad_low_threshold=2.0,
+            sad_high_threshold=6.0
+        )
 
     # 2. Video info
     cap = cv2.VideoCapture(input_path)
@@ -26,7 +47,7 @@ if __name__ == "__main__":
     scene_boundaries = sorted(set(scene_boundaries))
 
     # 4. Scene dynamics
-    scores = scene_dynamics(all_mean_sads, frame_indices, scene_boundaries)
+    scores = scene_dynamics(sad, frame_indices, scene_boundaries)
 
     # 5. Thresholds za dinamiku
     scene_means = [scene["mean"] for scene in scores]
@@ -37,8 +58,14 @@ if __name__ == "__main__":
     for scene in scores:
         scene["interval"] = interval_for_score(scene["mean"], low_thresh, high_thresh, min_interval = 60, max_interval = 180)
 
+    #generisanje keyframeova samo na pocetak scene
+    
+    keyframes = generate_keyframes_by_scene(scene_changes, total_frames)
+
+
     # 7. Generisanje konkretnih keyframeova
-    keyframes = generate_keyframes(scores, total_frames, min_interval = 60)
+    #keyframes = generate_keyframes(scores, total_frames, min_interval = 60)
+
 
     print("Keyframeovi:")
     print(keyframes)
@@ -102,3 +129,4 @@ if __name__ == "__main__":
     print(f"PSNR: {adaptive_psnr:.3f} dB")
     print(f"SSIM: {adaptive_ssim:.6f}")
     print(f"Decoding time: {adaptive_decode:.3f} s")
+    

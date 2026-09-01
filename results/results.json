@@ -1,0 +1,246 @@
+[
+    {
+        "video": "Video 1",
+        "method": "Fixed GOP",
+        "i_frames": 13,
+        "bitrate_kbps": 3358.894,
+        "size_mb": 10.188735961914062,
+        "average_gop_seconds": 2.0020000000000002,
+        "psnr_db": 43.171931,
+        "ssim": 0.988145,
+        "decoding_time_seconds": 4.106139166591068
+    },
+    {
+        "video": "Video 1",
+        "method": "Default x264",
+        "i_frames": 5,
+        "bitrate_kbps": 3065.691,
+        "size_mb": 9.302447319030762,
+        "average_gop_seconds": 4.579575,
+        "psnr_db": 43.119397,
+        "ssim": 0.988814,
+        "decoding_time_seconds": 4.124054633469011
+    },
+    {
+        "video": "Video 1",
+        "method": "Adaptive GOP",
+        "i_frames": 5,
+        "bitrate_kbps": 3135.658,
+        "size_mb": 9.51392650604248,
+        "average_gop_seconds": 4.57123325,
+        "psnr_db": 42.829377,
+        "ssim": 0.98739,
+        "decoding_time_seconds": 4.038266100067024,
+        "keyframes": [
+            0,
+            289,
+            548
+        ]
+    },
+    {
+        "video": "Video 2",
+        "method": "Fixed GOP",
+        "i_frames": 25,
+        "bitrate_kbps": 3186.493,
+        "size_mb": 18.83876132965088,
+        "average_gop_seconds": 2.001388875,
+        "psnr_db": 42.773381,
+        "ssim": 0.989425,
+        "decoding_time_seconds": 7.2602500332674635
+    },
+    {
+        "video": "Video 2",
+        "method": "Default x264",
+        "i_frames": 12,
+        "bitrate_kbps": 2939.583,
+        "size_mb": 17.39065933227539,
+        "average_gop_seconds": 4.057575727272727,
+        "psnr_db": 44.061654,
+        "ssim": 0.990656,
+        "decoding_time_seconds": 6.632335033267736
+    },
+    {
+        "video": "Video 2",
+        "method": "Adaptive GOP",
+        "i_frames": 11,
+        "bitrate_kbps": 2954.501,
+        "size_mb": 17.4781436920166,
+        "average_gop_seconds": 4.46,
+        "psnr_db": 42.49319,
+        "ssim": 0.988823,
+        "decoding_time_seconds": 7.368110300041735,
+        "keyframes": [
+            0,
+            153,
+            296,
+            441,
+            587,
+            742,
+            852,
+            975,
+            1107,
+            1200,
+            1337
+        ]
+    },
+    {
+        "video": "Video 3",
+        "method": "Fixed GOP",
+        "i_frames": 11,
+        "bitrate_kbps": 2320.818,
+        "size_mb": 6.1443328857421875,
+        "average_gop_seconds": 2.0,
+        "psnr_db": 47.433269,
+        "ssim": 0.993228,
+        "decoding_time_seconds": 3.396072000032291
+    },
+    {
+        "video": "Video 3",
+        "method": "Default x264",
+        "i_frames": 5,
+        "bitrate_kbps": 2222.416,
+        "size_mb": 5.8983917236328125,
+        "average_gop_seconds": 4.58333325,
+        "psnr_db": 47.839607,
+        "ssim": 0.993732,
+        "decoding_time_seconds": 3.3727359666178622
+    },
+    {
+        "video": "Video 3",
+        "method": "Adaptive GOP",
+        "i_frames": 5,
+        "bitrate_kbps": 2230.346,
+        "size_mb": 5.918213844299316,
+        "average_gop_seconds": 4.725,
+        "psnr_db": 47.715258,
+        "ssim": 0.99357,
+        "decoding_time_seconds": 3.307484266658624,
+        "keyframes": [
+            0,
+            270,
+            394,
+            567
+        ]
+    },
+    {
+        "video": "Video 4",
+        "method": "Fixed GOP",
+        "i_frames": 15,
+        "bitrate_kbps": 2295.211,
+        "size_mb": 8.167622566223145,
+        "average_gop_seconds": 2.0,
+        "psnr_db": 47.030787,
+        "ssim": 0.99307,
+        "decoding_time_seconds": 3.9960566667529442
+    },
+    {
+        "video": "Video 4",
+        "method": "Default x264",
+        "i_frames": 16,
+        "bitrate_kbps": 2214.538,
+        "size_mb": 7.89676570892334,
+        "average_gop_seconds": 1.7244444666666667,
+        "psnr_db": 47.764435,
+        "ssim": 0.993867,
+        "decoding_time_seconds": 4.194638599952062
+    },
+    {
+        "video": "Video 4",
+        "method": "Adaptive GOP",
+        "i_frames": 8,
+        "bitrate_kbps": 2237.606,
+        "size_mb": 7.974198341369629,
+        "average_gop_seconds": 3.4714285714285715,
+        "psnr_db": 47.060059,
+        "ssim": 0.993121,
+        "decoding_time_seconds": 5.02765806663471,
+        "keyframes": [
+            0,
+            53,
+            116,
+            207,
+            331,
+            495,
+            627,
+            729
+        ]
+    },
+    {
+        "video": "Video 5",
+        "method": "Fixed GOP",
+        "i_frames": 8,
+        "bitrate_kbps": 2750.7,
+        "size_mb": 5.2026166915893555,
+        "average_gop_seconds": 2.0,
+        "psnr_db": 45.369536,
+        "ssim": 0.990276,
+        "decoding_time_seconds": 2.771512933385869
+    },
+    {
+        "video": "Video 5",
+        "method": "Default x264",
+        "i_frames": 4,
+        "bitrate_kbps": 2634.513,
+        "size_mb": 4.983792304992676,
+        "average_gop_seconds": 3.7444443333333335,
+        "psnr_db": 45.867875,
+        "ssim": 0.991181,
+        "decoding_time_seconds": 2.2777559666428715
+    },
+    {
+        "video": "Video 5",
+        "method": "Adaptive GOP",
+        "i_frames": 4,
+        "bitrate_kbps": 2659.524,
+        "size_mb": 5.030900001525879,
+        "average_gop_seconds": 3.733333333333333,
+        "psnr_db": 45.620157,
+        "ssim": 0.990699,
+        "decoding_time_seconds": 2.912002766660104,
+        "keyframes": [
+            0,
+            93,
+            175,
+            336
+        ]
+    },
+    {
+        "video": "Video 6",
+        "method": "Fixed GOP",
+        "i_frames": 11,
+        "bitrate_kbps": 2740.242,
+        "size_mb": 6.778895378112793,
+        "average_gop_seconds": 2.0,
+        "psnr_db": 45.510854,
+        "ssim": 0.990547,
+        "decoding_time_seconds": 3.5714286332949996
+    },
+    {
+        "video": "Video 6",
+        "method": "Default x264",
+        "i_frames": 4,
+        "bitrate_kbps": 2608.086,
+        "size_mb": 6.453366279602051,
+        "average_gop_seconds": 5.1000000000000005,
+        "psnr_db": 45.966425,
+        "ssim": 0.991324,
+        "decoding_time_seconds": 3.448430500070875
+    },
+    {
+        "video": "Video 6",
+        "method": "Adaptive GOP",
+        "i_frames": 4,
+        "bitrate_kbps": 2623.749,
+        "size_mb": 6.491938591003418,
+        "average_gop_seconds": 5.088889,
+        "psnr_db": 45.71246,
+        "ssim": 0.990852,
+        "decoding_time_seconds": 3.350373166690891,
+        "keyframes": [
+            0,
+            161,
+            321,
+            458
+        ]
+    }
+]

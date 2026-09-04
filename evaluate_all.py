@@ -7,19 +7,23 @@ import numpy as np
 from functions import (
     scene_dynamics,
     interval_for_score,
-    generate_keyframes_by_scene,
-    combine_sad_histogram
+    generate_keyframes,
+    combine_sad_histogram,
+    generate_adaptive_gop_structure
 )
 
 from ffmpeg_utils import (
     create_720p,
     encode_adaptive_GOP,
+    encode_adaptive_pb_GOP,
+    encode_adaptive_fixed_pb_GOP,
     encode_fixed_GOP,
     encode_default,
     get_video_metrics,
     get_psnr,
     get_ssim,
-    get_decoding_time
+    get_decoding_time,
+    get_frame_type_counts
 )
 
 
@@ -28,35 +32,32 @@ from ffmpeg_utils import (
 # ============================================================
 
 videos = [
-    {
-        "name": "Video 1",
-        "path": ".\\evaluation\\test1.mp4"
-    },
-    {
-        "name": "Video 2",
-        "path": ".\\evaluation\\test2.mp4"
-    },
-    {
-        "name": "Video 3",
-        "path": ".\\evaluation\\test3.mp4"
-    },
-    {
-        "name": "Video 4",
-        "path": ".\\evaluation\\test4.mp4"
-    },
-    {
-        "name": "Video 5",
-        "path": ".\\evaluation\\test5.mp4"
-    },
-    {
-        "name": "Video 6",
-        "path": ".\\evaluation\\test6.mp4"
-    }
+    {"name": "Video 1", "path": ".\\evaluation\\test1.mp4"},
+    {"name": "Video 2", "path": ".\\evaluation\\test2.mp4"},
+    {"name": "Video 3", "path": ".\\evaluation\\test3.mp4"},
+    {"name": "Video 4", "path": ".\\evaluation\\test4.mp4"},
+    {"name": "Video 5", "path": ".\\evaluation\\test5.mp4"},
+    {"name": "Video 6", "path": ".\\evaluation\\test6.mp4"}
 ]
 
 
 # ============================================================
-# PARAMETRI COMBINOVANOG SAD + HISTOGRAM ALGORITMA
+# IZBOR METODE
+# ============================================================
+
+# Promeni SAMO ovu vrednost kada želiš drugu metodu.
+#
+# "fixed"
+# "default"
+# "adaptive_i"
+# "adaptive_fixed_pb"
+# "adaptive_pb"
+
+METHOD = "adaptive_pb"
+
+
+# ============================================================
+# PARAMETRI
 # ============================================================
 
 WINDOW_SIZE = 30
@@ -76,25 +77,51 @@ MIN_PEAK_DIFF = 0.5
 SAD_LOW_THRESHOLD = 2.0
 SAD_HIGH_THRESHOLD = 6.0
 
+# Adaptive GOP
+MIN_INTERVAL = 60
+MAX_INTERVAL = 180
+
+# Adaptive P/B
+B_MAX = 3
+B_MIN = 1
+
 
 # ============================================================
-# OUTPUT FOLDER
+# OUTPUT
 # ============================================================
 
 RESULTS_FOLDER = ".\\results"
 
-os.makedirs(RESULTS_FOLDER, exist_ok=True)
-
-
-# ============================================================
-# REZULTATI
-# ============================================================
+os.makedirs(
+    RESULTS_FOLDER,
+    exist_ok=True
+)
 
 all_results = []
 
 
 # ============================================================
-# FUNKCIJA ZA DODAVANJE REZULTATA
+# NAZIV METODE
+# ============================================================
+
+method_names = {
+    "fixed": "Fixed GOP",
+    "default": "Default x264",
+    "adaptive_i": "Adaptive I",
+    "adaptive_fixed_pb": "Adaptive I + Fixed P/B",
+    "adaptive_pb": "Adaptive I + Adaptive P/B"
+}
+
+if METHOD not in method_names:
+    raise ValueError(
+        f"Nepoznata metoda: {METHOD}"
+    )
+
+METHOD_NAME = method_names[METHOD]
+
+
+# ============================================================
+# ČUVANJE REZULTATA
 # ============================================================
 
 def save_result(
@@ -104,19 +131,40 @@ def save_result(
     psnr,
     ssim,
     decode_time,
-    keyframes=None
+    keyframes=None,
+    frame_types=None,
+    frame_count=None
 ):
 
     result = {
         "video": video_name,
         "method": method,
+
         "i_frames": metrics["i_frame_count"],
+
+        "p_frames":
+            frame_types["P"]
+            if frame_types is not None
+            else None,
+
+        "b_frames":
+            frame_types["B"]
+            if frame_types is not None
+            else None,
+
         "bitrate_kbps": metrics["bitrate"],
         "size_mb": metrics["size"],
-        "average_gop_seconds": metrics["average_interval"],
+        "average_gop_seconds":
+            metrics["average_interval"],
+
         "psnr_db": psnr,
         "ssim": ssim,
-        "decoding_time_seconds": decode_time
+
+        "decoding_time_seconds":
+            decode_time,
+
+        "frame_count":
+            frame_count
     }
 
     if keyframes is not None:
@@ -129,25 +177,21 @@ def save_result(
 # GLAVNA EVALUACIJA
 # ============================================================
 
-print("\n")
-print("=" * 90)
-print(" EVALUACIJA SVA TRI METODA")
-print("=" * 90)
-
+print("\n" + "=" * 100)
+print(f" EVALUACIJA: {METHOD_NAME}")
+print("=" * 100)
 
 for video in videos:
 
     video_name = video["name"]
     original_path = video["path"]
 
-    print("\n")
-    print("=" * 90)
+    print("\n" + "=" * 100)
     print(video_name)
-    print("=" * 90)
-
+    print("=" * 100)
 
     # ========================================================
-    # 0. 720p VIDEO
+    # 0. 720p
     # ========================================================
 
     evaluation_path = os.path.join(
@@ -166,346 +210,630 @@ for video in videos:
 
     else:
 
-        print("\n720p verzija već postoji - preskačem.")
+        print(
+            "\n720p verzija već postoji - preskačem."
+        )
 
-
-    # ========================================================
-    # VIDEO INFO
-    # ========================================================
-
-    cap = cv2.VideoCapture(evaluation_path)
+    cap = cv2.VideoCapture(
+        evaluation_path
+    )
 
     total_frames = int(
         cap.get(cv2.CAP_PROP_FRAME_COUNT)
     )
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(
+        cv2.CAP_PROP_FPS
+    )
 
     cap.release()
 
-    print(f"Ukupno frejmova: {total_frames}")
-    print(f"FPS: {fps:.2f}")
-
-
-    # ========================================================
-    # 1. COMBINOVANA SCENE DETECTION
-    # ========================================================
-
-    print("\n[1/3] Računanje adaptive keyframeova...")
-    print("       SAD + Histogram")
-
-
-    (
-        scene_changes,
-        sad,
-        hist,
-        combined,
-        combined_thresholds,
-        frame_indices,
-        weights_sad,
-        weights_hist
-    ) = combine_sad_histogram(
-
-        evaluation_path,
-
-        window_size=WINDOW_SIZE,
-
-        sad_threshold_factor=SAD_THRESHOLD_FACTOR,
-        min_sad=MIN_SAD,
-        sad_peak_multiplier=SAD_PEAK_MULTIPLIER,
-
-        hist_threshold_factor=HIST_THRESHOLD_FACTOR,
-        min_hist_diff=MIN_HIST_DIFF,
-        hist_peak_multiplier=HIST_PEAK_MULTIPLIER,
-        min_peak_diff=MIN_PEAK_DIFF,
-
-        sad_low_threshold=SAD_LOW_THRESHOLD,
-        sad_high_threshold=SAD_HIGH_THRESHOLD
+    print(
+        f"Ukupno frejmova: {total_frames}"
     )
 
-
-    print("\nDetektovane promene scene:")
-    print(scene_changes)
-
-
-    # ========================================================
-    # 2. SCENE BOUNDARIES
-    # ========================================================
-
-    scene_boundaries = [0]
-
-    scene_boundaries.extend(
-        frame for frame, _ in scene_changes
-    )
-
-    scene_boundaries.append(total_frames)
-
-    scene_boundaries = sorted(
-        set(scene_boundaries)
+    print(
+        f"FPS: {fps:.2f}"
     )
 
 
     # ========================================================
-    # 3. SCENE DYNAMICS
+    # PROMENLJIVE ZA ADAPTIVNE METODE
     # ========================================================
 
-    scores = scene_dynamics(
-        sad,
-        frame_indices,
-        scene_boundaries
-    )
+    adaptive_keyframes = None
+    scores = None
+    gop_scenes = None
+
+    low_thresh = 0
+    high_thresh = 1
 
 
     # ========================================================
-    # 4. ADAPTIVNI INTERVALI
+    # 1. SCENE DETECTION
+    # Samo za adaptive metode
     # ========================================================
 
-    if scores:
+    if METHOD in [
+        "adaptive_i",
+        "adaptive_fixed_pb",
+        "adaptive_pb"
+    ]:
 
-        scene_means = [
-            scene["mean"]
-            for scene in scores
-        ]
-
-        low_thresh = np.percentile(
-            scene_means,
-            25
+        print(
+            "\nRačunanje adaptive keyframeova..."
         )
 
-        high_thresh = np.percentile(
-            scene_means,
-            75
+        print(
+            "SAD + Histogram"
         )
 
-        for scene in scores:
+        (
+            scene_changes,
+            sad,
+            hist,
+            combined,
+            combined_thresholds,
+            frame_indices,
+            weights_sad,
+            weights_hist
+        ) = combine_sad_histogram(
 
-            scene["interval"] = interval_for_score(
-                scene["mean"],
-                low_thresh,
-                high_thresh,
-                min_interval=60,
-                max_interval=180
+            evaluation_path,
+
+            window_size=WINDOW_SIZE,
+
+            sad_threshold_factor=
+                SAD_THRESHOLD_FACTOR,
+
+            min_sad=
+                MIN_SAD,
+
+            sad_peak_multiplier=
+                SAD_PEAK_MULTIPLIER,
+
+            hist_threshold_factor=
+                HIST_THRESHOLD_FACTOR,
+
+            min_hist_diff=
+                MIN_HIST_DIFF,
+
+            hist_peak_multiplier=
+                HIST_PEAK_MULTIPLIER,
+
+            min_peak_diff=
+                MIN_PEAK_DIFF,
+
+            sad_low_threshold=
+                SAD_LOW_THRESHOLD,
+
+            sad_high_threshold=
+                SAD_HIGH_THRESHOLD
+        )
+
+
+        # ----------------------------------------------------
+        # Scene changes
+        # ----------------------------------------------------
+
+        print(
+            "\nDetektovane promene scene:"
+        )
+
+        print(
+            scene_changes
+        )
+
+
+        # ====================================================
+        # 2. SCENE BOUNDARIES + DYNAMICS
+        # ====================================================
+
+        scene_boundaries = sorted(
+            set(
+                [0]
+                +
+                [
+                    frame
+                    for frame, _ in scene_changes
+                ]
+                +
+                [total_frames]
+            )
+        )
+
+        scores = scene_dynamics(
+            sad,
+            frame_indices,
+            scene_boundaries
+        )
+
+
+        # ====================================================
+        # 3. ADAPTIVNI INTERVALI
+        # ====================================================
+
+        if scores:
+
+            scene_means = [
+                scene["mean"]
+                for scene in scores
+            ]
+
+            low_thresh = np.percentile(
+                scene_means,
+                25
+            )
+
+            high_thresh = np.percentile(
+                scene_means,
+                75
+            )
+
+            for scene in scores:
+
+                scene["interval"] = (
+                    interval_for_score(
+                        scene["mean"],
+                        low_thresh,
+                        high_thresh,
+                        min_interval=
+                            MIN_INTERVAL,
+                        max_interval=
+                            MAX_INTERVAL
+                    )
+                )
+
+
+        # ====================================================
+        # 4. ADAPTIVE I KEYFRAMEOVI
+        # ====================================================
+
+        adaptive_keyframes = generate_keyframes(
+            scores,
+            total_frames,
+            min_interval=MIN_INTERVAL
+        )
+
+        print(
+            "\nAdaptive keyframeovi:"
+        )
+
+        print(
+            adaptive_keyframes
+        )
+
+
+        if len(adaptive_keyframes) > 1:
+
+            differences = [
+                adaptive_keyframes[i]
+                -
+                adaptive_keyframes[i - 1]
+
+                for i in range(
+                    1,
+                    len(adaptive_keyframes)
+                )
+            ]
+
+            print(
+                "Razmaci:",
+                differences
+            )
+
+            print(
+                "Minimalni razmak:",
+                min(differences)
+            )
+
+            print(
+                "Prosečan razmak:",
+                sum(differences)
+                /
+                len(differences)
+            )
+
+
+        # ====================================================
+        # 5. ADAPTIVE P/B STRUKTURA
+        # ====================================================
+
+        if METHOD == "adaptive_pb":
+
+            gop_scenes = [
+                generate_adaptive_gop_structure(
+                    scene,
+                    low_thresh,
+                    high_thresh,
+                    b_max=B_MAX,
+                    b_min=B_MIN
+                )
+
+                for scene in scores
+            ]
+
+            print(
+                "\nAdaptive P/B struktura:"
+            )
+
+            for i, g in enumerate(
+                gop_scenes
+            ):
+
+                print(
+                    f"Scena {i}: "
+                    f"start={g['start']} "
+                    f"end={g['end']} "
+                    f"mean={g['mean']:.4f} "
+                    f"complexity={g['complexity']:.3f} "
+                    f"type={g['type']} "
+                    f"B={g['bframes']}"
+                )
+
+
+        # ====================================================
+        # ADAPTIVE I + FIXED P/B
+        # ====================================================
+
+        elif METHOD == "adaptive_fixed_pb":
+
+            gop_scenes = [
+                {
+                    "start":
+                        scene["start"],
+
+                    "end":
+                        scene["end"]
+                }
+
+                for scene in scores
+            ]
+
+            print(
+                "\nAdaptive I + Fixed P/B"
+            )
+
+            print(
+                "Sve scene koriste:"
+            )
+
+            print(
+                "B=3, "
+                "b-adapt=0, "
+                "b-pyramid=none"
             )
 
 
     # ========================================================
-    # 5. KEYFRAME NA POČETKU SVАКЕ SCENE
+    # OUTPUT PATH
     # ========================================================
 
-    adaptive_keyframes = generate_keyframes_by_scene(
-        scene_changes,
-        total_frames
+    prefix = video_name.replace(
+        " ",
+        "_"
     )
 
-    print("\nAdaptive keyframeovi:")
-    print(adaptive_keyframes)
 
+    if METHOD == "fixed":
 
-    if len(adaptive_keyframes) > 1:
+        output_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{prefix}_fixed.mp4"
+        )
 
-        differences = [
-            adaptive_keyframes[i]
-            - adaptive_keyframes[i - 1]
-            for i in range(1, len(adaptive_keyframes))
-        ]
+    elif METHOD == "default":
 
-        print("Razmaci:", differences)
-        print("Minimalni razmak:", min(differences))
-        print(
-            "Prosečan razmak:",
-            sum(differences) / len(differences)
+        output_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{prefix}_default.mp4"
+        )
+
+    elif METHOD == "adaptive_i":
+
+        output_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{prefix}_adaptive.mp4"
+        )
+
+    elif METHOD == "adaptive_fixed_pb":
+
+        output_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{prefix}_adaptive_fixed_pb.mp4"
+        )
+
+    elif METHOD == "adaptive_pb":
+
+        output_path = os.path.join(
+            RESULTS_FOLDER,
+            f"{prefix}_adaptive_pb.mp4"
         )
 
 
     # ========================================================
-    # OUTPUT PATHS
+    # 6. ENKODOVANJE
     # ========================================================
 
-    fixed_output = os.path.join(
-        RESULTS_FOLDER,
-        f"{video_name.replace(' ', '_')}_fixed.mp4"
+    print(
+        f"\nEnkodovanje: {METHOD_NAME}"
     )
 
-    default_output = os.path.join(
-        RESULTS_FOLDER,
-        f"{video_name.replace(' ', '_')}_default.mp4"
-    )
 
-    adaptive_output = os.path.join(
-        RESULTS_FOLDER,
-        f"{video_name.replace(' ', '_')}_adaptive.mp4"
-    )
+    # --------------------------------------------------------
+    # FIXED GOP
+    # --------------------------------------------------------
+
+    if METHOD == "fixed":
+
+        encode_fixed_GOP(
+            evaluation_path,
+            output_path
+        )
+
+
+    # --------------------------------------------------------
+    # DEFAULT X264
+    # --------------------------------------------------------
+
+    elif METHOD == "default":
+
+        encode_default(
+            evaluation_path,
+            output_path
+        )
+
+
+    # --------------------------------------------------------
+    # ADAPTIVE I
+    # --------------------------------------------------------
+
+    elif METHOD == "adaptive_i":
+
+        encode_adaptive_GOP(
+            evaluation_path,
+            output_path,
+            adaptive_keyframes
+        )
+
+
+    # --------------------------------------------------------
+    # ADAPTIVE I + FIXED P/B
+    # --------------------------------------------------------
+
+    elif METHOD == "adaptive_fixed_pb":
+
+        encode_adaptive_fixed_pb_GOP(
+            evaluation_path,
+            output_path,
+            gop_scenes,
+            adaptive_keyframes
+        )
+
+
+    # --------------------------------------------------------
+    # ADAPTIVE I + ADAPTIVE P/B
+    # --------------------------------------------------------
+
+    elif METHOD == "adaptive_pb":
+
+        encode_adaptive_pb_GOP(
+            evaluation_path,
+            output_path,
+            gop_scenes,
+            adaptive_keyframes
+        )
 
 
     # ========================================================
-    # 6. FIXED GOP
+    # 7. METRIKE
     # ========================================================
 
-    print("\n[2/3] Enkodovanje FIXED GOP...")
+    print(
+        "\nRačunanje metrika..."
+    )
 
-    encode_fixed_GOP(
+
+    metrics = get_video_metrics(
+        output_path
+    )
+
+
+    psnr = get_psnr(
         evaluation_path,
-        fixed_output
+        output_path
     )
 
-    fixed_metrics = get_video_metrics(
-        fixed_output
-    )
 
-    fixed_psnr = get_psnr(
+    ssim = get_ssim(
         evaluation_path,
-        fixed_output
+        output_path
     )
 
-    fixed_ssim = get_ssim(
-        evaluation_path,
-        fixed_output
-    )
 
-    fixed_decode = get_decoding_time(
-        fixed_output,
+    decode_time = get_decoding_time(
+        output_path,
         repetitions=3
     )
 
+
+    # ========================================================
+    # 8. FRAME TYPES
+    # ========================================================
+
+    frame_types = None
+    frame_count = None
+
+
+    if METHOD in [
+        "adaptive_fixed_pb",
+        "adaptive_pb"
+    ]:
+
+        frame_types = get_frame_type_counts(
+            output_path
+        )
+
+
+        cap = cv2.VideoCapture(
+            output_path
+        )
+
+        frame_count = int(
+            cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        )
+
+        cap.release()
+
+
+        print(
+            "\nProvera broja frejmova:"
+        )
+
+        print(
+            f"Original: "
+            f"{total_frames}"
+        )
+
+        print(
+            f"Izlaz:    "
+            f"{frame_count}"
+        )
+
+        print(
+            f"Razlika:  "
+            f"{frame_count - total_frames}"
+        )
+
+
+        print(
+            "\nStvarna struktura:"
+        )
+
+        print(
+            f"I={frame_types['I']} "
+            f"P={frame_types['P']} "
+            f"B={frame_types['B']}"
+        )
+
+
+        # ----------------------------------------------------
+        # OBAVEZNA PROVERA
+        # ----------------------------------------------------
+
+        if frame_count != total_frames:
+
+            print(
+                "\nUPOZORENJE:"
+            )
+
+            print(
+                "Broj frejmova izlaznog videa "
+                "nije isti kao originalni!"
+            )
+
+
+    # ========================================================
+    # 9. ČUVANJE REZULTATA
+    # ========================================================
+
     save_result(
+
         video_name,
-        "Fixed GOP",
-        fixed_metrics,
-        fixed_psnr,
-        fixed_ssim,
-        fixed_decode
-    )
 
+        METHOD_NAME,
 
-    # ========================================================
-    # 7. DEFAULT X264
-    # ========================================================
+        metrics,
 
-    print("\n[3/3] Enkodovanje DEFAULT x264...")
+        psnr,
 
-    encode_default(
-        evaluation_path,
-        default_output
-    )
+        ssim,
 
-    default_metrics = get_video_metrics(
-        default_output
-    )
+        decode_time,
 
-    default_psnr = get_psnr(
-        evaluation_path,
-        default_output
-    )
+        adaptive_keyframes,
 
-    default_ssim = get_ssim(
-        evaluation_path,
-        default_output
-    )
+        frame_types,
 
-    default_decode = get_decoding_time(
-        default_output,
-        repetitions=3
-    )
-
-    save_result(
-        video_name,
-        "Default x264",
-        default_metrics,
-        default_psnr,
-        default_ssim,
-        default_decode
-    )
-
-
-    # ========================================================
-    # 8. ADAPTIVE GOP
-    # ========================================================
-
-    print("\n[4/3] Enkodovanje ADAPTIVE GOP...")
-
-    encode_adaptive_GOP(
-        evaluation_path,
-        adaptive_output,
-        adaptive_keyframes
-    )
-
-    adaptive_metrics = get_video_metrics(
-        adaptive_output
-    )
-
-    adaptive_psnr = get_psnr(
-        evaluation_path,
-        adaptive_output
-    )
-
-    adaptive_ssim = get_ssim(
-        evaluation_path,
-        adaptive_output
-    )
-
-    adaptive_decode = get_decoding_time(
-        adaptive_output,
-        repetitions=3
-    )
-
-    save_result(
-        video_name,
-        "Adaptive GOP",
-        adaptive_metrics,
-        adaptive_psnr,
-        adaptive_ssim,
-        adaptive_decode,
-        adaptive_keyframes
+        frame_count
     )
 
 
 # ============================================================
-# ISPIS SVIH REZULTATA
+# ISPIS REZULTATA
 # ============================================================
 
-print("\n\n")
-print("=" * 125)
-print(" SVI REZULTATI")
-print("=" * 125)
+print(
+    "\n\n"
+    + "=" * 145
+)
+
+print(
+    f" REZULTATI: {METHOD_NAME}"
+)
+
+print(
+    "=" * 145
+)
+
 
 print(
     f"{'Video':<10}"
-    f"{'Metod':<18}"
-    f"{'I-frame':<10}"
-    f"{'Bitrate':<15}"
-    f"{'Size':<12}"
-    f"{'GOP':<12}"
-    f"{'PSNR':<10}"
-    f"{'SSIM':<12}"
-    f"{'Decode':<12}"
+    f"{'Metod':<28}"
+    f"{'I':<7}"
+    f"{'P':<7}"
+    f"{'B':<7}"
+    f"{'Bitrate':<13}"
+    f"{'Size':<10}"
+    f"{'GOP':<10}"
+    f"{'PSNR':<9}"
+    f"{'SSIM':<11}"
+    f"{'Decode':<10}"
 )
 
-print("-" * 125)
+
+print(
+    "-" * 145
+)
 
 
-for result in all_results:
+for r in all_results:
 
     print(
-        f"{result['video']:<10}"
-        f"{result['method']:<18}"
-        f"{result['i_frames']:<10}"
-        f"{result['bitrate_kbps']:<15.2f}"
-        f"{result['size_mb']:<12.2f}"
-        f"{result['average_gop_seconds']:<12.3f}"
-        f"{result['psnr_db']:<10.3f}"
-        f"{result['ssim']:<12.6f}"
-        f"{result['decoding_time_seconds']:<12.3f}"
+
+        f"{r['video']:<10}"
+
+        f"{r['method']:<28}"
+
+        f"{str(r['i_frames']):<7}"
+
+        f"{str(r['p_frames']) if r['p_frames'] is not None else '-':<7}"
+
+        f"{str(r['b_frames']) if r['b_frames'] is not None else '-':<7}"
+
+        f"{r['bitrate_kbps']:<13.2f}"
+
+        f"{r['size_mb']:<10.2f}"
+
+        f"{r['average_gop_seconds']:<10.3f}"
+
+        f"{r['psnr_db']:<9.3f}"
+
+        f"{r['ssim']:<11.6f}"
+
+        f"{r['decoding_time_seconds']:<10.3f}"
     )
 
 
 # ============================================================
-# ČUVANJE CSV
+# CSV
 # ============================================================
 
 csv_path = os.path.join(
     RESULTS_FOLDER,
-    "results.csv"
+    f"{METHOD}_results.csv"
 )
+
 
 with open(
     csv_path,
@@ -514,49 +842,61 @@ with open(
     encoding="utf-8"
 ) as file:
 
+    fieldnames = [
+
+        "video",
+        "method",
+
+        "i_frames",
+        "p_frames",
+        "b_frames",
+
+        "bitrate_kbps",
+        "size_mb",
+        "average_gop_seconds",
+
+        "psnr_db",
+        "ssim",
+
+        "decoding_time_seconds",
+
+        "frame_count",
+        "keyframes"
+    ]
+
+
     writer = csv.DictWriter(
         file,
-        fieldnames=[
-            "video",
-            "method",
-            "i_frames",
-            "bitrate_kbps",
-            "size_mb",
-            "average_gop_seconds",
-            "psnr_db",
-            "ssim",
-            "decoding_time_seconds",
-            "keyframes"
-        ]
+        fieldnames=fieldnames
     )
 
+
     writer.writeheader()
+
 
     for result in all_results:
 
         row = result.copy()
 
-        if "keyframes" in row:
-
-            row["keyframes"] = str(
-                row["keyframes"]
+        row["keyframes"] = str(
+            row.get(
+                "keyframes",
+                ""
             )
-
-        else:
-
-            row["keyframes"] = ""
+        )
 
         writer.writerow(row)
 
 
 # ============================================================
-# ČUVANJE JSON
+# JSON
 # ============================================================
 
 json_path = os.path.join(
     RESULTS_FOLDER,
-    "results.json"
+    f"{METHOD}_results.json"
 )
+
 
 with open(
     json_path,
@@ -572,89 +912,82 @@ with open(
 
 
 # ============================================================
-# PROSECI PO METODI
+# PROSEK TRENUTNE METODE
 # ============================================================
 
-methods = [
-    "Fixed GOP",
-    "Default x264",
-    "Adaptive GOP"
-]
+if all_results:
 
+    def avg(key):
 
-print("\n\n")
-print("=" * 100)
-print(" PROSEČNE VREDNOSTI PO METODI")
-print("=" * 100)
+        values = [
+            r[key]
 
-print(
-    f"{'Metod':<18}"
-    f"{'I-frameovi':<12}"
-    f"{'Bitrate':<15}"
-    f"{'Size':<12}"
-    f"{'GOP':<12}"
-    f"{'PSNR':<10}"
-    f"{'SSIM':<12}"
-    f"{'Decode':<12}"
-)
+            for r in all_results
 
-print("-" * 100)
+            if r[key] is not None
+        ]
 
+        return (
+            sum(values) / len(values)
+            if values
+            else 0
+        )
 
-for method in methods:
-
-    method_results = [
-        r for r in all_results
-        if r["method"] == method
-    ]
-
-    if not method_results:
-        continue
-
-    mean_i_frames = sum(
-        r["i_frames"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_bitrate = sum(
-        r["bitrate_kbps"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_size = sum(
-        r["size_mb"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_gop = sum(
-        r["average_gop_seconds"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_psnr = sum(
-        r["psnr_db"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_ssim = sum(
-        r["ssim"]
-        for r in method_results
-    ) / len(method_results)
-
-    mean_decode = sum(
-        r["decoding_time_seconds"]
-        for r in method_results
-    ) / len(method_results)
 
     print(
-        f"{method:<18}"
-        f"{mean_i_frames:<12.2f}"
-        f"{mean_bitrate:<15.2f}"
-        f"{mean_size:<12.2f}"
-        f"{mean_gop:<12.3f}"
-        f"{mean_psnr:<10.3f}"
-        f"{mean_ssim:<12.6f}"
-        f"{mean_decode:<12.3f}"
+        "\n\n"
+        + "=" * 120
+    )
+
+    print(
+        f" PROSEK: {METHOD_NAME}"
+    )
+
+    print(
+        "=" * 120
+    )
+
+
+    print(
+        f"{'Metod':<28}"
+        f"{'I':<9}"
+        f"{'P':<9}"
+        f"{'B':<9}"
+        f"{'Bitrate':<14}"
+        f"{'Size':<11}"
+        f"{'GOP':<11}"
+        f"{'PSNR':<10}"
+        f"{'SSIM':<12}"
+        f"{'Decode':<11}"
+    )
+
+
+    print(
+        "-" * 120
+    )
+
+
+    print(
+
+        f"{METHOD_NAME:<28}"
+
+        f"{avg('i_frames'):<9.2f}"
+
+        f"{avg('p_frames'):<9.2f}"
+
+        f"{avg('b_frames'):<9.2f}"
+
+        f"{avg('bitrate_kbps'):<14.2f}"
+
+        f"{avg('size_mb'):<11.2f}"
+
+        f"{avg('average_gop_seconds'):<11.3f}"
+
+        f"{avg('psnr_db'):<10.3f}"
+
+        f"{avg('ssim'):<12.6f}"
+
+        f"{avg('decoding_time_seconds'):<11.3f}"
     )
 
 
@@ -662,11 +995,27 @@ for method in methods:
 # KRAJ
 # ============================================================
 
-print("\n")
-print("=" * 90)
-print(" GOTOVO")
-print("=" * 90)
+print(
+    "\n"
+    + "=" * 100
+)
 
-print(f"CSV rezultati:  {csv_path}")
-print(f"JSON rezultati: {json_path}")
-print()
+print(
+    " GOTOVO"
+)
+
+print(
+    "=" * 100
+)
+
+print(
+    f"Metoda:          {METHOD_NAME}"
+)
+
+print(
+    f"CSV rezultati:   {csv_path}"
+)
+
+print(
+    f"JSON rezultati:  {json_path}"
+)

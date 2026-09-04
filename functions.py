@@ -55,7 +55,7 @@ def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, mi
     prev_gray = cv2.cvtColor(prev_gray, cv2.COLOR_BGR2GRAY)
     prev_gray = cv2.GaussianBlur(prev_gray, (21, 21), 0)
     
-    frame_idx = 0
+    frame_idx = 1
     window_sads = []
     all_mean_sads = []
     thresholds = []
@@ -100,7 +100,6 @@ def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, mi
             #thresholds.append(np.nan)
             pass
         
-        
         window_sads.append(mean_sad)  
         
         if len(window_sads) > window_size:
@@ -130,6 +129,17 @@ def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, mi
     
     return (scene_changes, all_mean_sads, thresholds, frame_indices)
 
+def calculate_histogram(frame):
+
+    frame = cv2.resize(frame, (640, 360)) 
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) 
+    hsv = cv2.GaussianBlur(hsv, (21, 21), 0)
+    
+    hist = cv2.calcHist( [hsv], [0, 1], None, [32, 32], [0, 180, 0, 256] )
+    hist = cv2.normalize( hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX ).flatten()
+    
+    return hist
+
 def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_hist_diff=0.05, peak_multiplier=1.5, min_peak_diff=0.5):
     
     #threshold_factor Određuje koliko standardnih devijacija iznad proseka mora da bude histogram difference da bi bio sumnjiv kao promena scene.
@@ -143,19 +153,9 @@ def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_his
     if not ret:
         return [], [], [], []
 
-    prev_frame = cv2.resize(prev_frame, (640, 360))
-    prev_hsv = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2HSV)
-    prev_hsv = cv2.GaussianBlur(prev_hsv, (21, 21), 0)
-
-    prev_hist = cv2.calcHist(
-        [prev_hsv], [0, 1], None,
-        [32, 32],
-        [0, 180, 0, 256]
-    )
-
-    prev_hist = cv2.normalize(prev_hist, prev_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX).flatten()
-
-    frame_idx = 0
+    curr_hist = calculate_histogram(frame)
+    
+    frame_idx = 1
     window_diffs = []
     all_hist_diffs = []
     thresholds = []
@@ -169,14 +169,9 @@ def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_his
         if not ret:
             break
 
-        curr_frame = cv2.resize(frame, (640, 360))
-        curr_hsv = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2HSV)
-        curr_hist = cv2.calcHist([curr_hsv], [0, 1], None, [32, 32], [0, 180, 0, 256])
-        curr_hist = cv2.normalize( curr_hist, curr_hist).flatten()
-        hist_diff = cv2.compareHist(prev_hist.astype(np.float32), curr_hist.astype(np.float32), cv2.HISTCMP_BHATTACHARYYA)
-
-        window_diffs.append(hist_diff)
-
+        curr_hist = calculate_histogram(frame)
+        hist_diff = cv2.compareHist( prev_hist.astype(np.float32), curr_hist.astype(np.float32), cv2.HISTCMP_BHATTACHARYYA )
+        
         if len(window_diffs) >= window_size:
 
             mean_hist_window = np.mean(window_diffs)
@@ -188,6 +183,8 @@ def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_his
             all_hist_diffs.append(hist_diff)
             frame_indices.append(frame_idx)
             thresholds.append(adaptive_threshold)
+            
+        window_diffs.append(hist_diff)
 
         if len(window_diffs) > window_size:
             window_diffs.pop(0)
@@ -343,13 +340,17 @@ def combine_sad_histogram(
     combined_thresholds = []
 
     for i in range(len(combined)):
-        start = max(0, i - window_size + 1)
-        combined_window = combined[start:i + 1]
-
-        mean_combined = np.mean(combined_window)
-        std_combined = np.std(combined_window)
-
-        threshold = (mean_combined + sad_threshold_factor * std_combined)
+        
+        if i >= window_size:
+            
+            combined_window = combined[i - window_size:i]
+            mean_combined = np.mean(combined_window)
+            std_combined = np.std(combined_window)
+            threshold = (mean_combined + sad_threshold_factor * std_combined)
+            
+        else:
+            threshold = np.nan
+            
         combined_thresholds.append(threshold)
 
     combined_thresholds = np.array(combined_thresholds)
@@ -465,3 +466,50 @@ def generate_keyframes_by_scene(scene_changes, total_frames):
     keyframes = sorted(set(keyframes))
 
     return keyframes
+
+def generate_adaptive_gop_structure(scene, low_thresh, high_thresh, b_max=3, b_min=1):
+    """
+    Određuje broj B-frameova na osnovu dinamike scene.
+
+    LOW    -> više B-frameova
+    MEDIUM -> srednje
+    HIGH   -> manje B-frameova
+    """
+
+    mean = scene["mean"]
+
+    if high_thresh > low_thresh:
+        complexity = (mean - low_thresh) / (high_thresh - low_thresh)
+    else:
+        complexity = 0.0
+
+    complexity = float(np.clip(complexity, 0.0, 1.0))
+
+    # 0 -> b_max
+    # 1 -> b_min
+    bframes = round(b_max - complexity * (b_max - b_min))
+    bframes = int(np.clip(bframes, b_min, b_max))
+
+    # zaštita za veoma kratke scene
+    scene_length = scene["end"] - scene["start"]
+    max_bframes_for_scene = max(0, scene_length - 2)
+
+    bframes = min(bframes, max_bframes_for_scene)
+
+    if complexity <= 1 / 3:
+        scene_type = "LOW"
+    elif complexity <= 2 / 3:
+        scene_type = "MEDIUM"
+    else:
+        scene_type = "HIGH"
+
+    return {
+        "start": scene["start"],
+        "end": scene["end"],
+        "mean": mean,
+        "complexity": complexity,
+        "type": scene_type,
+        "bframes": bframes,
+        "b_adapt": 0,
+        "b_pyramid": "none"
+    }

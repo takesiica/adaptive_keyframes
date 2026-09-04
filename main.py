@@ -1,15 +1,16 @@
 import cv2
 import numpy as np
-from functions import (adaptive_threshold1, scene_dynamics, interval_for_score, generate_keyframes, generate_keyframes_by_scene, combine_sad_histogram)
-from ffmpeg_utils import (encode_adaptive_GOP, encode_fixed_GOP, encode_default, get_video_metrics, get_psnr, get_ssim, get_decoding_time)
+from functions import (adaptive_threshold1, scene_dynamics, interval_for_score, generate_keyframes, generate_keyframes_by_scene, combine_sad_histogram, generate_adaptive_gop_structure)
+from ffmpeg_utils import (encode_adaptive_GOP, encode_fixed_GOP, encode_default, get_video_metrics, get_psnr, get_ssim, get_decoding_time, encode_adaptive_pb_GOP, encode_adaptive_fixed_pb_GOP, get_frame_type_counts)
 
 
 if __name__ == "__main__":
 
-    input_path = ".\\evaluation\\test6.mp4"
+    input_path = ".\\evaluation\\test3.mp4"
     output_path1 = ".\\output1.mp4"
     output_path2 = ".\\output2.mp4"
     output_path3 = ".\\output3.mp4"
+    output_path4 = ".\\output4.mp4"
 
     # 1. Scene detection
     
@@ -60,15 +61,33 @@ if __name__ == "__main__":
 
     #generisanje keyframeova samo na pocetak scene
     
-    keyframes = generate_keyframes_by_scene(scene_changes, total_frames)
+    #keyframes = generate_keyframes_by_scene(scene_changes, total_frames)
 
 
     # 7. Generisanje konkretnih keyframeova
-    #keyframes = generate_keyframes(scores, total_frames, min_interval = 60)
+    keyframes = generate_keyframes(scores, total_frames, min_interval = 60)
 
 
     print("Keyframeovi:")
     print(keyframes)
+    
+    gop_scenes = [
+        generate_adaptive_gop_structure(scene, low_thresh, high_thresh, b_max=3, b_min=1)
+        for scene in scores
+    ]
+
+    print("\nAdaptive P/B struktura po sceni:")
+
+    for i, g in enumerate(gop_scenes):
+        print(
+            f"Scena {i}: "
+            f"start={g['start']} "
+            f"end={g['end']} "
+            f"mean={g['mean']:.4f} "
+            f"complexity={g['complexity']:.3f} "
+            f"type={g['type']} "
+            f"B={g['bframes']}"
+        )
     
     differences = [
     keyframes[i] - keyframes[i-1]
@@ -79,27 +98,45 @@ if __name__ == "__main__":
     print("Prosečan razmak:", sum(differences) / len(differences))
 
     # 8. Enkodovanje i provera
-    encode_fixed_GOP(input_path, output_path1)
-    encode_default(input_path, output_path2)
+    #encode_fixed_GOP(input_path, output_path1)
+    #encode_default(input_path, output_path2)
     encode_adaptive_GOP(input_path, output_path3, keyframes)
+    #encode_adaptive_fixed_pb_GOP(input_path, output_path4, gop_scenes, keyframes)
     
     # 9. Merenje metrika
-    fixed_metrics = get_video_metrics(output_path1)
-    default_metrics = get_video_metrics(output_path2)
+    #fixed_metrics = get_video_metrics(output_path1)
+    #default_metrics = get_video_metrics(output_path2)
     adaptive_metrics = get_video_metrics(output_path3)
+    #adaptive_pb_metrics = get_video_metrics(output_path4)
     
-    fixed_psnr = get_psnr(input_path, output_path1)
-    default_psnr = get_psnr(input_path, output_path2)
+    #fixed_psnr = get_psnr(input_path, output_path1)
+    #default_psnr = get_psnr(input_path, output_path2)
     adaptive_psnr = get_psnr(input_path, output_path3)
+    #adaptive_pb_psnr = get_psnr(input_path, output_path4)
 
-    fixed_ssim = get_ssim(input_path, output_path1)
-    default_ssim = get_ssim(input_path, output_path2)
+    #fixed_ssim = get_ssim(input_path, output_path1)
+    #default_ssim = get_ssim(input_path, output_path2)
     adaptive_ssim = get_ssim(input_path, output_path3)
+    #adaptive_pb_ssim = get_ssim(input_path, output_path4)
     
-    fixed_decode = get_decoding_time(".\\output1.mp4", repetitions=5)
-    default_decode = get_decoding_time(".\\output2.mp4", repetitions=5)
+    #fixed_decode = get_decoding_time(".\\output1.mp4", repetitions=5)
+    #default_decode = get_decoding_time(".\\output2.mp4", repetitions=5)
     adaptive_decode = get_decoding_time(".\\output3.mp4", repetitions=5)
-
+    #adaptive_pb_decode = get_decoding_time(".\\output4.mp4", repetitions=5)
+    
+    #adaptive_pb_frame_types = get_frame_type_counts(output_path4)
+    
+    print("\nADAPTIVE GOP")
+    print(f"Bitrate: {adaptive_metrics['bitrate']:.2f} kb/s")
+    print(f"Veličina: {adaptive_metrics['size']:.2f} MB")
+    print(f"I-frameovi: {adaptive_metrics['i_frame_count']}")
+    print(f"Prosečan razmak I-frameova: {adaptive_metrics['average_interval']:.3f} s")
+    print(f"PSNR: {adaptive_psnr:.3f} dB")
+    print(f"SSIM: {adaptive_ssim:.6f}")
+    print(f"Decoding time: {adaptive_decode:.3f} s")
+    
+    
+'''
     # 10. Prikaz rezultata
     print("\n=== REZULTATI ===")
 
@@ -130,3 +167,22 @@ if __name__ == "__main__":
     print(f"SSIM: {adaptive_ssim:.6f}")
     print(f"Decoding time: {adaptive_decode:.3f} s")
     
+    print("\nADAPTIVE I + ADAPTIVE P/B")
+    print(f"Bitrate: {adaptive_pb_metrics['bitrate']:.2f} kb/s")
+    print(f"Veličina: {adaptive_pb_metrics['size']:.2f} MB")
+    print(f"I-frameovi: {adaptive_pb_metrics['i_frame_count']}")
+    print(f"P-frameovi: {adaptive_pb_frame_types['P']}")
+    print(f"B-frameovi: {adaptive_pb_frame_types['B']}")
+    print(f"Prosečan razmak I-frameova: {adaptive_pb_metrics['average_interval']:.3f} s")
+    print(f"PSNR: {adaptive_pb_psnr:.3f} dB")
+    print(f"SSIM: {adaptive_pb_ssim:.6f}")
+    print(f"Decoding time: {adaptive_pb_decode:.3f} s")
+
+    print(
+        f"Stvarna struktura iz ffprobe: "
+        f"I={adaptive_pb_frame_types['I']} "
+        f"P={adaptive_pb_frame_types['P']} "
+        f"B={adaptive_pb_frame_types['B']}"
+    )
+    
+'''

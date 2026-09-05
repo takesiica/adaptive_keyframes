@@ -391,9 +391,9 @@ def scene_dynamics(all_mean_sads, frame_indices, scene_boundaries):
         segment = [s for f, s in zip(frame_indices, all_mean_sads) if start <= f < end]
         
         # Ako nema SAD vrednosti za ovu scenu, preskoči je
-        '''if len(segment) == 0:
+        if len(segment) == 0:
             print(f"prazna scena {start} - {end}")
-            continue'''
+            continue
         
         scores.append({
             "start": start,

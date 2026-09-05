@@ -84,6 +84,10 @@ def encode_default(input_path, output_path):
     
 def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
 
+    cap = cv2.VideoCapture(input_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    
     force_keyframes = "+".join(
         f"eq(n,{frame})" for frame in keyframes
     )
@@ -98,6 +102,7 @@ def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
         "-preset", "medium",
         "-bf", "3",
 
+        "-g", str(frame_count + 1),
         # Ne dozvoljavamo x264-u da sam ubacuje scene-cut I-frameove
         "-sc_threshold", "0",
 
@@ -111,250 +116,93 @@ def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
 
     subprocess.run(command, check=True)
     
-def encode_adaptive_fixed_pb_GOP(   
-    input_path,
-    output_path,
-    gop_scenes,
-    keyframes
-):
-    """
-    Scene-by-scene encoding sa FIKSNIM brojem B-frameova.
+def encode_adaptive_fixed_pb_GOP(input_path, output_path, keyframes):
 
-    Svrha:
-    Ablation test za proveru da li degradacija rezultata
-    dolazi od scene-by-scene encoding arhitekture, a ne
-    od adaptivnog izbora broja B-frameova.
+    # Broj frejmova u videu
+    cap = cv2.VideoCapture(input_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
 
-    Sve scene koriste:
-        bframes=3
-        b-adapt=0
-        b-pyramid=none
-    """
-
-    tmp_dir = tempfile.mkdtemp(
-        prefix="adaptive_fixed_pb_"
+    # Keyframeovi koje je odredio naš algoritam
+    force_keyframes = "+".join(
+        f"eq(n,{frame})" for frame in keyframes
     )
 
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+
+        "-c:v", "libx264",
+
+        # Isti kvalitet i preset kao kod ostalih metoda
+        "-crf", "23",
+        "-preset", "medium",
+
+        # FIKSNA P/B STRUKTURA
+        "-x264-params",
+        "bframes=3:b-adapt=0:b-pyramid=none",
+
+        "-threads", "1",
+        "-g", str(frame_count + 1),
+        "-sc_threshold", "0",
+
+        # Koristimo samo naše adaptivno određene keyframeove
+        "-force_key_frames",
+        f"expr:{force_keyframes}",
+
+        "-c:a", "copy",
+
+        output_path
+    ]
+
+    subprocess.run(command, check=True)
+    
+def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
+
+    cap = cv2.VideoCapture(input_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    tmp_dir = tempfile.mkdtemp(prefix="adaptive_pb_")
     segment_paths = []
 
-    concat_list_path = os.path.join(
-        tmp_dir,
-        "concat_list.txt"
-    )
-
-    concat_video_path = os.path.join(
-        tmp_dir,
-        "concat_video.mp4"
-    )
-
     try:
-
         for i, scene in enumerate(gop_scenes):
 
             start = scene["start"]
             end = scene["end"]
-
-            # --------------------------------------------------
-            # KLJUČNA IZMENA:
-            # svaka scena koristi isti broj B-frameova
-            # --------------------------------------------------
-            bframes = 3
+            bframes = scene["bframes"]
 
             seg_path = os.path.join(
                 tmp_dir,
                 f"seg_{i:04d}.mp4"
             )
 
-            # Keyframeovi koji pripadaju ovoj sceni.
-            # Pretvaramo ih u lokalne indekse scene.
-            interior = sorted({
+            # Keyframeovi koji pripadaju ovoj sceni
+            local_keyframes = [
                 k - start
                 for k in keyframes
                 if start <= k < end
-            })
-
-            # Svaka scena mora početi od frejma 0.
-            if 0 not in interior:
-                interior = [0] + interior
-
-            force_expr = "+".join(
-                f"eq(n,{k})"
-                for k in interior
-            )
-
-            command = [
-                "ffmpeg",
-                "-y",
-
-                "-i",
-                input_path,
-
-                # Izvuci samo ovu scenu i resetuj timestampove
-                "-vf",
-                (
-                    f"select='between(n,{start},{end - 1})',"
-                    "setpts=PTS-STARTPTS"
-                ),
-
-                # Audio ćemo dodati na kraju
-                "-an",
-
-                "-c:v",
-                "libx264",
-
-                "-crf",
-                "23",
-
-                "-preset",
-                "medium",
-
-                # FIKSNI B-frame parametri
-                "-x264-params",
-                (
-                    f"bframes={bframes}:"
-                    "b-adapt=0:"
-                    "b-pyramid=none"
-                ),
-
-                "-threads",
-                "1",
-
-                # x264 ne sme sam da ubacuje scene-cut I-frameove
-                "-sc_threshold",
-                "0",
-
-                # Naši keyframeovi
-                "-force_key_frames",
-                f"expr:{force_expr}",
-
-                seg_path
             ]
 
-            subprocess.run(
-                command,
-                check=True
-            )
+            # Svaka scena počinje I-frejmom
+            if 0 not in local_keyframes:
+                local_keyframes.insert(0, 0)
 
-            segment_paths.append(seg_path)
-
-        # ------------------------------------------------------
-        # Napravi concat listu
-        # ------------------------------------------------------
-
-        with open(
-            concat_list_path,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            for p in segment_paths:
-                f.write(
-                    f"file '{p}'\n"
-                )
-
-        # ------------------------------------------------------
-        # Spoji video segmente bez ponovnog enkodovanja
-        # ------------------------------------------------------
-
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list_path,
-                "-c", "copy",
-                concat_video_path
-            ],
-            check=True
-        )
-
-        # ------------------------------------------------------
-        # Dodaj originalni audio
-        # ------------------------------------------------------
-
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-
-                "-i",
-                concat_video_path,
-
-                "-i",
-                input_path,
-
-                "-map",
-                "0:v:0",
-
-                "-map",
-                "1:a:0?",
-
-                "-c",
-                "copy",
-
-                output_path
-            ],
-            check=True
-        )
-
-    finally:
-
-        # ------------------------------------------------------
-        # Čišćenje privremenih fajlova
-        # ------------------------------------------------------
-
-        for p in segment_paths:
-
-            if os.path.exists(p):
-                os.remove(p)
-
-        if os.path.exists(concat_list_path):
-            os.remove(concat_list_path)
-
-        if os.path.exists(concat_video_path):
-            os.remove(concat_video_path)
-
-        if os.path.isdir(tmp_dir):
-            os.rmdir(tmp_dir)
-    
-def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
-    tmp_dir = tempfile.mkdtemp(prefix="adaptive_pb_")
-
-    segment_paths = []
-    concat_list_path = os.path.join(tmp_dir, "concat_list.txt")
-    concat_video_path = os.path.join(tmp_dir, "concat_video.mp4")
-
-    try:
-        for i, scene in enumerate(gop_scenes):
-            start = scene["start"]
-            end = scene["end"]
-            bframes = scene["bframes"]
-
-            seg_path = os.path.join(tmp_dir, f"seg_{i:04d}.mp4" )
-
-            # Keyframeovi koji pripadaju ovoj sceni
-            interior = sorted({
-                k - start
-                for k in keyframes
-                if start <= k < end
-            })
-
-            if 0 not in interior:
-                interior = [0] + interior
+            local_keyframes = sorted(set(local_keyframes))
 
             force_expr = "+".join(
                 f"eq(n,{k})"
-                for k in interior
+                for k in local_keyframes
             )
 
             command = [
                 "ffmpeg",
                 "-y",
+                "-i", input_path,
 
-                "-i",
-                input_path,
-
+                # Uzmi samo trenutnu scenu
                 "-vf",
                 (
                     f"select='between(n,{start},{end - 1})',"
@@ -363,15 +211,11 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
 
                 "-an",
 
-                "-c:v",
-                "libx264",
+                "-c:v", "libx264",
+                "-crf", "23",
+                "-preset", "medium",
 
-                "-crf",
-                "23",
-
-                "-preset",
-                "medium",
-
+                # Adaptivan broj B-frejmova za ovu scenu
                 "-x264-params",
                 (
                     f"bframes={bframes}:"
@@ -379,11 +223,11 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
                     "b-pyramid=none"
                 ),
 
-                "-threads",
-                "1",
+                "-threads", "1",
 
-                "-sc_threshold",
-                "0",
+                # Samo naši I-frejmovi
+                "-g", str(end - start + 1),
+                "-sc_threshold", "0",
 
                 "-force_key_frames",
                 f"expr:{force_expr}",
@@ -394,41 +238,45 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
             subprocess.run(command, check=True)
             segment_paths.append(seg_path)
 
-        # napravi concat listu
-        with open(concat_list_path, "w", encoding="utf-8") as f:
+        # Napravi concat listu
+        concat_list = os.path.join(
+            tmp_dir,
+            "concat_list.txt"
+        )
 
-            for p in segment_paths:
-                f.write(
-                    f"file '{p}'\n"
-                )
+        with open(concat_list, "w", encoding="utf-8") as f:
+            for path in segment_paths:
+                f.write(f"file '{path}'\n")
 
-        # spoji segmente bez ponovnog enkodovanja
+        # Spoji video segmente bez ponovnog enkodovanja
+        concat_video = os.path.join(
+            tmp_dir,
+            "concat_video.mp4"
+        )
+
         subprocess.run(
             [
                 "ffmpeg",
                 "-y",
                 "-f", "concat",
                 "-safe", "0",
-                "-i", concat_list_path,
+                "-i", concat_list,
                 "-c", "copy",
-                concat_video_path
+                concat_video
             ],
             check=True
         )
 
-        # vrati originalni audio
+        # Dodaj originalni audio
         subprocess.run(
             [
                 "ffmpeg",
                 "-y",
-                "-i", concat_video_path,
+                "-i", concat_video,
                 "-i", input_path,
-
                 "-map", "0:v:0",
                 "-map", "1:a:0?",
-
                 "-c", "copy",
-
                 output_path
             ],
             check=True
@@ -436,17 +284,18 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
 
     finally:
 
-        for p in segment_paths:
-            if os.path.exists(p):
-                os.remove(p)
+        # Obrisi privremene fajlove
+        for path in segment_paths:
+            if os.path.exists(path):
+                os.remove(path)
 
-        if os.path.exists(concat_list_path):
-            os.remove(concat_list_path)
+        if os.path.exists(os.path.join(tmp_dir, "concat_list.txt")):
+            os.remove(os.path.join(tmp_dir, "concat_list.txt"))
 
-        if os.path.exists(concat_video_path):
-            os.remove(concat_video_path)
+        if os.path.exists(os.path.join(tmp_dir, "concat_video.mp4")):
+            os.remove(os.path.join(tmp_dir, "concat_video.mp4"))
 
-        if os.path.isdir(tmp_dir):
+        if os.path.exists(tmp_dir):
             os.rmdir(tmp_dir)
 
 def check_keyframes(output_path):

@@ -45,36 +45,16 @@ def scene_detection_SAD (video_path, threshold):
     cap.release()
     return scene_changes #, sad_val, mean_val
 
-def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, min_sad = 5.0, peak_multiplier = 2.6):
-    cap = cv2.VideoCapture(video_path)
-    ret, prev_frame = cap.read()
-    if not ret:
-        return [], [], [], []   
-    
-    prev_gray = cv2.resize(prev_frame, (640, 360))
-    prev_gray = cv2.cvtColor(prev_gray, cv2.COLOR_BGR2GRAY)
-    prev_gray = cv2.GaussianBlur(prev_gray, (21, 21), 0)
-    
-    frame_idx = 1
+def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, min_sad = 5.0, peak_multiplier = 2.6, *, raw_features=None, cache_dir="analysis_cache"):
+    from feature_cache import get_raw_features
+    raw = raw_features if raw_features is not None else get_raw_features(video_path, cache_dir)
     window_sads = []
     all_mean_sads = []
     thresholds = []
     scene_changes = []
     frame_indices = []
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        curr_gray = cv2.resize(frame, (640, 360))
-        curr_gray = cv2.cvtColor(curr_gray, cv2.COLOR_BGR2GRAY)
-        curr_gray = cv2.GaussianBlur(curr_gray, (21, 21), 0)
-        
-        diff = cv2.absdiff(prev_gray, curr_gray) #diff za obicna dva frejma
-        mean_sad = np.mean(diff) #diff objedinjen u jedan prosecan broj
-        
+    fps = raw["fps"]
+    for frame_idx, mean_sad in zip(raw["frame_indices"].tolist(), raw["sad"]):
         if len(window_sads) >= window_size:
             
             mean_sad_window = np.mean(window_sads) #mean broj za sve vrednosti u trenutnom windowu
@@ -105,11 +85,6 @@ def adaptive_threshold1(video_path, window_size = 30, threshold_factor = 3.0, mi
         if len(window_sads) > window_size:
             window_sads.pop(0)
           
-        prev_gray = curr_gray
-        frame_idx += 1
-        
-    cap.release()
-    
     for i in range(1, len(all_mean_sads) - 1):
     
             current = all_mean_sads[i]
@@ -140,39 +115,21 @@ def calculate_histogram(frame):
     
     return hist
 
-def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_hist_diff=0.05, peak_multiplier=1.5, min_peak_diff=0.5):
+def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_hist_diff=0.05, peak_multiplier=1.5, min_peak_diff=0.5, *, raw_features=None, cache_dir="analysis_cache"):
     
     #threshold_factor Određuje koliko standardnih devijacija iznad proseka mora da bude histogram difference da bi bio sumnjiv kao promena scene.
     #std je brojka koja odredjuje koliko je daleko neka vrednost od prosecne vrednosti za te podatke
     #min_hist_diff - minimalni threshold, sluzi da algoritam ne bude preosetljiv, postavlja sta sme da bude najniza vrednost 
     #peak_multiplier - da trenutns vrednost treba da bude dosta veca od prethodne
     
-    cap = cv2.VideoCapture(video_path)
-    ret, prev_frame = cap.read()
-
-    if not ret:
-        return [], [], [], []
-
-
-    prev_hist = calculate_histogram(prev_frame)
-    
-    frame_idx = 1
+    from feature_cache import get_raw_features
+    raw = raw_features if raw_features is not None else get_raw_features(video_path, cache_dir)
     window_diffs = []
     all_hist_diffs = []
     thresholds = []
     frame_indices = []
     scene_changes = []
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    while cap.isOpened():
-        ret, frame = cap.read()
-
-        if not ret:
-            break
-
-        curr_hist = calculate_histogram(frame)
-        hist_diff = cv2.compareHist( prev_hist.astype(np.float32), curr_hist.astype(np.float32), cv2.HISTCMP_BHATTACHARYYA )
-        
+    for frame_idx, hist_diff in zip(raw["frame_indices"].tolist(), raw["histogram"].tolist()):
         if len(window_diffs) >= window_size:
 
             mean_hist_window = np.mean(window_diffs)
@@ -189,11 +146,6 @@ def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_his
 
         if len(window_diffs) > window_size:
             window_diffs.pop(0)
-
-        prev_hist = curr_hist
-        frame_idx += 1
-
-    cap.release()
 
     # Detekcija scene change-a
 

@@ -1,5 +1,13 @@
 import os
 import json
+import argparse
+import inspect
+import logging
+import uuid
+from pathlib import Path
+
+from experiment_io import atomic_json, digest
+from feature_cache import get_raw_features
 
 from functions import adaptive_threshold1, adaptive_histogram
 
@@ -9,12 +17,6 @@ from functions import adaptive_threshold1, adaptive_histogram
 # ============================================================
 
 CACHE_FOLDER = "analysis_cache"
-
-os.makedirs(
-    CACHE_FOLDER,
-    exist_ok=True
-)
-
 
 # ============================================================
 # PARAMETRI SAD
@@ -45,28 +47,17 @@ HIST_PARAMETERS = {
 # VIDEO
 # ============================================================
 
-videos = [
-    {
-        "name": "test6",
-        "path": "/home/takesi/adaptive_keyframes/evaluation/test6.mp4"
-    }
-]
 
 
 # ============================================================
 # PUTANJA CACHE FAJLA
 # ============================================================
 
-def get_cache_path(video_path):
-
-    video_name = os.path.splitext(
-        os.path.basename(video_path)
-    )[0]
-
-    return os.path.join(
-        CACHE_FOLDER,
-        f"{video_name}_analysis.json"
-    )
+def get_cache_path(video_path, cache_dir=CACHE_FOLDER, raw=None):
+    raw = raw if raw is not None else get_raw_features(video_path, cache_dir)
+    identity = {"raw": raw["metadata"], "sad": SAD_PARAMETERS, "hist": HIST_PARAMETERS,
+                "detectors": digest(inspect.getsource(adaptive_threshold1) + inspect.getsource(adaptive_histogram))}
+    return str(Path(cache_dir) / f"{Path(video_path).stem}-{digest(identity)[:20]}-analysis.json")
 
 
 # ============================================================
@@ -88,11 +79,19 @@ def load_analysis_cache(cache_path):
 
             data = json.load(file)
 
+        for feature in ("sad", "histogram"):
+            values = data[feature]
+            if not (len(values["values"]) == len(values["thresholds"]) == len(values["frame_indices"])):
+                raise ValueError("Incomplete detector cache")
+            if not isinstance(values["scene_changes"], list):
+                raise ValueError("Invalid detector cache")
+
     except Exception as e:
 
         print(
             f"Greška pri učitavanju cache-a: {e}"
         )
+        Path(cache_path).rename(str(cache_path) + ".invalid-" + uuid.uuid4().hex)
 
         return None
 
@@ -217,18 +216,7 @@ def save_analysis_cache(
     }
 
 
-    with open(
-        cache_path,
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        json.dump(
-            data,
-            file,
-            indent=4
-        )
-
+    atomic_json(cache_path, data)
 
     print()
     print(
@@ -252,11 +240,10 @@ def save_analysis_cache(
 # GLAVNA FUNKCIJA
 # ============================================================
 
-def get_video_analysis(video_path):
+def get_video_analysis(video_path, cache_dir=CACHE_FOLDER, *, raw_features=None):
 
-    cache_path = get_cache_path(
-        video_path
-    )
+    raw = raw_features if raw_features is not None else get_raw_features(video_path, cache_dir)
+    cache_path = get_cache_path(video_path, cache_dir, raw)
 
 
     # --------------------------------------------------------
@@ -305,6 +292,7 @@ def get_video_analysis(video_path):
     sad_results = adaptive_threshold1(
 
         video_path,
+        raw_features=raw,
 
         window_size=
             SAD_PARAMETERS["window_size"],
@@ -362,6 +350,7 @@ def get_video_analysis(video_path):
     hist_results = adaptive_histogram(
 
         video_path,
+        raw_features=raw,
 
         window_size=
             HIST_PARAMETERS["window_size"],
@@ -450,130 +439,14 @@ def get_video_analysis(video_path):
 # ============================================================
 
 if __name__ == "__main__":
-
-    print()
-    print(
-        "=" * 90
-    )
-
-    print(
-        " ČUVANJE SAD + HISTOGRAM ANALIZE"
-    )
-
-    print(
-        "=" * 90
-    )
-
-
-    for video in videos:
-
-        video_path = video["path"]
-
-
-        print()
-        print(
-            "-" * 90
-        )
-
-        print(
-            video["name"]
-        )
-
-        print(
-            "-" * 90
-        )
-
-
-        # ----------------------------------------------------
-        # Provera videa
-        # ----------------------------------------------------
-
-        if not os.path.exists(
-            video_path
-        ):
-
-            print(
-                "GREŠKA: Video ne postoji:"
-            )
-
-            print(
-                f"        {video_path}"
-            )
-
-            continue
-
-
-        # ----------------------------------------------------
-        # Analiza ili učitavanje cache-a
-        # ----------------------------------------------------
-
-        sad_results, hist_results = (
-
-            get_video_analysis(
-                video_path
-            )
-        )
-
-
-        # ----------------------------------------------------
-        # Rezultati
-        # ----------------------------------------------------
-
-        print()
-        print(
-            "=" * 70
-        )
-
-        print(
-            " REZULTAT"
-        )
-
-        print(
-            "=" * 70
-        )
-
-
-        print(
-            f"SAD promena:       "
-            f"{len(sad_results['scene_changes'])}"
-        )
-
-        print(
-            f"Histogram promena: "
-            f"{len(hist_results['scene_changes'])}"
-        )
-
-        print()
-
-
-        print(
-            f"SAD vrednosti: "
-            f"{len(sad_results['values'])}"
-        )
-
-        print(
-            f"Histogram vrednosti: "
-            f"{len(hist_results['values'])}"
-        )
-
-        print()
-
-
-        print(
-            f"Sačuvano u: "
-            f"{get_cache_path(video_path)}"
-        )
-
-
-    print()
-    print(
-        "=" * 90
-    )
-
-    print(
-        " GOTOVO"
-    )
-
-    print(
-        "=" * 90
-    )
+    parser = argparse.ArgumentParser(description="Cache raw SAD/histogram features and unchanged detectors; annotations are separate.")
+    parser.add_argument("--input", nargs="+", required=True)
+    parser.add_argument("--cache-dir", default=CACHE_FOLDER)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    import cv2
+    cv2.setNumThreads(1)
+    for video_path in args.input:
+        sad, histogram = get_video_analysis(video_path, args.cache_dir)
+        logging.info("Analysis complete: %s; SAD cuts=%d, histogram cuts=%d", video_path,
+                     len(sad["scene_changes"]), len(histogram["scene_changes"]))

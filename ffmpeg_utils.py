@@ -3,6 +3,12 @@ import os
 import time
 import tempfile
 import cv2
+import json
+import logging
+import statistics
+from pathlib import Path
+
+from experiment_io import run_command, COMMAND_LOG, append_jsonl
 
 def encode_adaptive_GOP(input_path, output_path, keyframes):
     
@@ -16,7 +22,7 @@ def encode_adaptive_GOP(input_path, output_path, keyframes):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
 
         "-c:v", "libx264",
@@ -33,17 +39,17 @@ def encode_adaptive_GOP(input_path, output_path, keyframes):
         # tvoji adaptivno određeni keyframeovi
         "-force_key_frames", f"expr:{force_keyframes}",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
         output_path
     ]
 
-    subprocess.run(command, check = True)
+    run_command(command, check = True)
 
 def encode_fixed_GOP(input_path, output_path):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
         "-c:v", "libx264",
         "-crf", "23",
@@ -57,17 +63,17 @@ def encode_fixed_GOP(input_path, output_path):
         # bez dodatnih scene-cut I-frameova
         "-sc_threshold", "0",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
         output_path
     ]
 
-    subprocess.run(command, check = True)
+    run_command(command, check = True)
 
 def encode_default(input_path, output_path):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
 
         "-c:v", "libx264",
@@ -76,11 +82,11 @@ def encode_default(input_path, output_path):
         "-bf", "3",
         "-threads", "1",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
         output_path
     ]
 
-    subprocess.run(command, check=True)
+    run_command(command, check=True)
     
 def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
 
@@ -94,13 +100,14 @@ def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
 
         "-c:v", "libx264",
         "-crf", "23",
         "-preset", "medium",
         "-bf", "3",
+        "-threads", "1",
 
         "-g", str(frame_count + 1),
         # Ne dozvoljavamo x264-u da sam ubacuje scene-cut I-frameove
@@ -110,11 +117,11 @@ def encode_one_I_frame_per_scene(input_path, output_path, keyframes):
         "-force_key_frames",
         f"expr:{force_keyframes}",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
         output_path
     ]
 
-    subprocess.run(command, check=True)
+    run_command(command, check=True)
     
 def encode_adaptive_fixed_pb_GOP(input_path, output_path, keyframes):
 
@@ -130,7 +137,7 @@ def encode_adaptive_fixed_pb_GOP(input_path, output_path, keyframes):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
 
         "-c:v", "libx264",
@@ -151,46 +158,70 @@ def encode_adaptive_fixed_pb_GOP(input_path, output_path, keyframes):
         "-force_key_frames",
         f"expr:{force_keyframes}",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
 
         output_path
     ]
 
-    subprocess.run(command, check=True)
+    run_command(command, check=True)
     
-def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
+def encode_scene_by_scene(
+    input_path,
+    output_path,
+    gop_scenes,
+    keyframes,
+    adaptive_b=True
+):
 
-    cap = cv2.VideoCapture(input_path)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    tmp_dir = tempfile.mkdtemp(
+        prefix="scene_encode_"
+    )
 
-    tmp_dir = tempfile.mkdtemp(prefix="adaptive_pb_")
     segment_paths = []
 
+    completed = False
+
     try:
+
         for i, scene in enumerate(gop_scenes):
 
             start = scene["start"]
             end = scene["end"]
-            bframes = scene["bframes"]
+
+            if adaptive_b:
+                bframes = scene["bframes"]
+            else:
+                bframes = 3
+
+            logging.info(
+                "Encoding scene %d/%d: "
+                "frames [%d,%d), B=%d",
+                i + 1,
+                len(gop_scenes),
+                start,
+                end,
+                bframes
+            )
 
             seg_path = os.path.join(
                 tmp_dir,
                 f"seg_{i:04d}.mp4"
             )
 
-            # Keyframeovi koji pripadaju ovoj sceni
+            # ISTI keyframe plan za obe metode
             local_keyframes = [
                 k - start
                 for k in keyframes
                 if start <= k < end
             ]
 
-            # Svaka scena počinje I-frejmom
+            # Svaka scena počinje I-frameom
             if 0 not in local_keyframes:
                 local_keyframes.insert(0, 0)
 
-            local_keyframes = sorted(set(local_keyframes))
+            local_keyframes = sorted(
+                set(local_keyframes)
+            )
 
             force_expr = "+".join(
                 f"eq(n,{k})"
@@ -199,23 +230,25 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
 
             command = [
                 "ffmpeg",
-                "-y",
+                "-n",
                 "-i", input_path,
 
-                # Uzmi samo trenutnu scenu
                 "-vf",
                 (
                     f"select='between(n,{start},{end - 1})',"
                     "setpts=PTS-STARTPTS"
                 ),
 
+                "-map", "0:v:0",
                 "-an",
+                "-sn",
+                "-dn",
 
                 "-c:v", "libx264",
                 "-crf", "23",
                 "-preset", "medium",
 
-                # Adaptivan broj B-frejmova za ovu scenu
+                # JEDINA RAZLIKA JE B BROJ
                 "-x264-params",
                 (
                     f"bframes={bframes}:"
@@ -225,7 +258,6 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
 
                 "-threads", "1",
 
-                # Samo naši I-frejmovi
                 "-g", str(end - start + 1),
                 "-sc_threshold", "0",
 
@@ -235,29 +267,42 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
                 seg_path
             ]
 
-            subprocess.run(command, check=True)
+            run_command(
+                command,
+                check=True
+            )
+
             segment_paths.append(seg_path)
 
-        # Napravi concat listu
+        # ----------------------------------------------------
+        # CONCAT
+        # ----------------------------------------------------
+
         concat_list = os.path.join(
             tmp_dir,
             "concat_list.txt"
         )
 
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for path in segment_paths:
-                f.write(f"file '{path}'\n")
+        with open(
+            concat_list,
+            "w",
+            encoding="utf-8"
+        ) as f:
 
-        # Spoji video segmente bez ponovnog enkodovanja
+            for path in segment_paths:
+                f.write(
+                    f"file '{path}'\n"
+                )
+
         concat_video = os.path.join(
             tmp_dir,
             "concat_video.mp4"
         )
 
-        subprocess.run(
+        run_command(
             [
                 "ffmpeg",
-                "-y",
+                "-n",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", concat_list,
@@ -267,24 +312,72 @@ def encode_adaptive_pb_GOP(input_path, output_path, gop_scenes, keyframes):
             check=True
         )
 
-        # Dodaj originalni audio
-        subprocess.run(
+        run_command(
             [
                 "ffmpeg",
-                "-y",
+                "-n",
                 "-i", concat_video,
-                "-i", input_path,
                 "-map", "0:v:0",
-                "-map", "1:a:0?",
+                "-an",
+                "-sn",
+                "-dn",
                 "-c", "copy",
                 output_path
             ],
             check=True
         )
 
+        completed = True
+
     finally:
 
-        # Obrisi privremene fajlove
+        if not completed:
+
+            logging.error(
+                "Preserving failed scene artifacts: %s",
+                tmp_dir
+            )
+
+        else:
+
+            _cleanup_scene_files(
+                tmp_dir,
+                segment_paths
+            )
+
+
+def encode_adaptive_pb_GOP(
+    input_path,
+    output_path,
+    gop_scenes,
+    keyframes
+):
+
+    encode_scene_by_scene(
+        input_path,
+        output_path,
+        gop_scenes,
+        keyframes,
+        adaptive_b=True
+    )
+
+def encode_adaptive_fixed_pb_GOP_scene_by_scene(
+    input_path,
+    output_path,
+    gop_scenes,
+    keyframes
+):
+
+    encode_scene_by_scene(
+        input_path,
+        output_path,
+        gop_scenes,
+        keyframes,
+        adaptive_b=False
+    )
+
+def _cleanup_scene_files(tmp_dir, segment_paths):
+        # Remove successful temporary encodes only; published results are never deleted.
         for path in segment_paths:
             if os.path.exists(path):
                 os.remove(path)
@@ -309,7 +402,7 @@ def check_keyframes(output_path):
         output_path
     ]
 
-    result = subprocess.run(
+    result = run_command(
         command,
         capture_output=True,
         text=True,
@@ -355,7 +448,7 @@ def get_frame_type_counts(video_path):
         video_path
     ]
 
-    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    result = run_command(command, capture_output=True, text=True, check=True)
 
     counts = { "I": 0, "P": 0, "B": 0 }
 
@@ -379,7 +472,7 @@ def get_bitrate(video_path):
         video_path
     ]
 
-    result = subprocess.run(command, capture_output = True, text = True, check = True)
+    result = run_command(command, capture_output = True, text = True, check = True)
     bitrate = result.stdout.strip()
 
     return float(bitrate) / 1000
@@ -429,89 +522,127 @@ def get_video_metrics(video_path):
         "average_interval": average_interval
     }
     
-def get_psnr(original_path, encoded_path):
-
+def _quality_metric(original_path, encoded_path, metric):
+    # Equal decoded frame counts and relative PTS are checked by the benchmark first.
     command = [
-        "ffmpeg",
-        "-i", encoded_path,
-        "-i", original_path,
-        "-lavfi",
-        "[0:v][1:v]psnr",
-        "-f", "null",
-        "-"
+        "ffmpeg", "-nostdin", "-threads", "1", "-i", str(encoded_path),
+        "-threads", "1", "-i", str(original_path), "-filter_complex_threads", "1",
+        "-filter_complex",
+        f"[0:v:0]setpts=PTS-STARTPTS[enc];[1:v:0]setpts=PTS-STARTPTS[ref];"
+        f"[enc][ref]{metric}=stats_file=-:shortest=1:repeatlast=0[metric]",
+        "-map", "[metric]", "-an", "-sn", "-dn", "-threads", "1", "-f", "null", "-"
     ]
+    result = run_command(command, capture_output=True, text=True)
+    marker = "average:" if metric == "psnr" else "All:"
+    values = [line.split(marker)[1].split()[0] for line in result.stderr.splitlines()
+              if metric.upper() in line and marker in line]
+    frames = sum(line.startswith("n:") for line in result.stdout.splitlines())
+    if not values or not frames:
+        raise RuntimeError(f"Missing {metric} measurement")
+    return float(values[-1]), frames
 
-    result = subprocess.run(command, capture_output = True, text = True)
 
-    for line in result.stderr.splitlines():
+def get_psnr(original_path, encoded_path):
+    return _quality_metric(original_path, encoded_path, "psnr")[0]
 
-        if "PSNR" in line and "average:" in line:
-            parts = line.split("average:")
-
-            if len(parts) > 1:
-                value = parts[1].split()[0]
-                return float(value)
-
-    return None
 
 def get_ssim(original_path, encoded_path):
+    return _quality_metric(original_path, encoded_path, "ssim")[0]
 
-    command = [
-        "ffmpeg",
-        "-i", encoded_path,
-        "-i", original_path,
-        "-lavfi",
-        "[0:v][1:v]ssim",
-        "-f", "null",
-        "-"
-    ]
 
-    result = subprocess.run(command, capture_output=True, text=True)
+def get_quality_metrics(original_path, encoded_path, expected_frames):
+    psnr, psnr_frames = _quality_metric(original_path, encoded_path, "psnr")
+    ssim, ssim_frames = _quality_metric(original_path, encoded_path, "ssim")
+    if psnr_frames != expected_frames or ssim_frames != expected_frames:
+        raise ValueError(f"Quality metric coverage mismatch: PSNR={psnr_frames}, SSIM={ssim_frames}, expected={expected_frames}")
+    return {"psnr_db": psnr, "ssim": ssim, "psnr_frames": psnr_frames, "ssim_frames": ssim_frames}
 
-    for line in result.stderr.splitlines():
-
-        if "SSIM" in line and "All:" in line:
-            parts = line.split("All:")
-
-            if len(parts) > 1:
-                value = parts[1].split()[0]
-                return float(value)
-
-    return None    
-
-def get_decoding_time(video_path, repetitions = 5):
-
+def measure_decoding(video_path, repetitions=3, cpu=None):
+    if repetitions < 1:
+        raise ValueError("At least one timing repetition is required")
+    command = ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1",
+               "-i", str(video_path), "-map", "0:v:0", "-an", "-sn", "-dn",
+               "-threads", "1", "-filter_threads", "1", "-f", "null", "-"]
+    if cpu is not None:
+        if cpu not in os.sched_getaffinity(0):
+            raise ValueError(f"CPU {cpu} is outside the allowed affinity")
+        command = ["taskset", "-c", str(cpu)] + command
     times = []
-
     for i in range(repetitions):
-
+        logging.info("Sequential video decoding: repetition %d/%d, cpu=%s", i + 1, repetitions, cpu)
         start = time.perf_counter()
+        # Logging/fsync happens after the stopwatch, not inside the timed operation.
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            elapsed = time.perf_counter() - start
+            if result.stderr.strip():
+                raise RuntimeError(f"Decode reported errors: {result.stderr}")
+        except BaseException as exc:
+            if COMMAND_LOG.get():
+                append_jsonl(COMMAND_LOG.get(), {"argv": command, "repetition": i + 1,
+                             "status": "decode_error", "error": repr(exc)})
+            raise
+        times.append(elapsed)
+        if COMMAND_LOG.get():
+            append_jsonl(COMMAND_LOG.get(), {"argv": command, "repetition": i + 1,
+                         "returncode": result.returncode, "decode_seconds": elapsed})
+    return {"decode_command": command, "decode_times_seconds": times,
+            "decode_mean_seconds": statistics.mean(times),
+            "decode_median_seconds": statistics.median(times)}
 
-        command = [
-            "ffmpeg",
-            "-v", "error",
-            "-threads", "1",
-            "-i", video_path,
-            "-f", "null",
-            "-"
-        ]
+def get_decoding_time(video_path, repetitions=5):
+    return measure_decoding(video_path, repetitions)["decode_mean_seconds"]
 
-        subprocess.run(command, check=True)
+def probe_video(video_path):
+    command = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(video_path)]
+    result = run_command(command, capture_output=True, text=True)
+    info = json.loads(result.stdout)
+    video = next(s for s in info["streams"] if s["codec_type"] == "video")
+    return {"video": video, "streams": info["streams"], "format": info["format"]}
 
-        end = time.perf_counter()
+def probe_frames(video_path):
+    command = ["ffprobe", "-v", "error", "-threads", "1", "-select_streams", "v:0",
+               "-show_frames", "-show_entries", "frame=key_frame,pict_type,best_effort_timestamp_time",
+               "-of", "json", str(video_path)]
+    result = run_command(command, capture_output=True, text=True)
+    if result.stderr.strip():
+        raise ValueError(f"Frame probe reported decode errors: {result.stderr}")
+    frames = json.loads(result.stdout)["frames"]
+    if not frames:
+        raise ValueError("No decoded video frames")
+    return {"frame_count": len(frames),
+            "keyframes": [i for i, f in enumerate(frames) if f["key_frame"] == 1],
+            "frame_types": {kind: sum(f.get("pict_type") == kind for f in frames) for kind in ("I", "P", "B")},
+            "timestamps": [float(f["best_effort_timestamp_time"]) for f in frames]}
 
-        decoding_time = end - start
-        times.append(decoding_time)
-
-    average_time = sum(times) / len(times)
-
-    return average_time
+def validate_video(reference_info, reference_frames, output_path, requested):
+    info = probe_video(output_path)
+    frames = probe_frames(output_path)
+    if len(info["streams"]) != 1 or info["video"]["codec_name"] != "h264":
+        raise ValueError("Benchmark output must contain exactly one H.264 video stream")
+    for field in ("width", "height", "pix_fmt"):
+        if info["video"][field] != reference_info["video"][field]:
+            raise ValueError(f"Reference/output {field} mismatch")
+    if frames["frame_count"] != reference_frames["frame_count"]:
+        raise ValueError(f"Frame count mismatch: {frames['frame_count']} vs {reference_frames['frame_count']}")
+    if requested is not None and frames["keyframes"] != requested:
+        missing = sorted(set(requested) - set(frames["keyframes"]))
+        extra = sorted(set(frames["keyframes"]) - set(requested))
+        raise ValueError(f"Keyframe mismatch: missing={missing}, extra={extra}")
+    a, b = frames["timestamps"], reference_frames["timestamps"]
+    if any(y <= x for x, y in zip(a, a[1:])):
+        raise ValueError("Non-monotonic output presentation timestamps")
+    error = max(abs((x - a[0]) - (y - b[0])) for x, y in zip(a, b))
+    if error > 0.0001:
+        raise ValueError(f"Relative presentation timestamps differ by {error:.6f}s")
+    frames["max_relative_timestamp_error_seconds"] = error
+    return info, frames
 
 def create_720p(input_path, output_path):
 
     command = [
         "ffmpeg",
-        "-y",
+        "-n",
         "-i", input_path,
 
         "-vf", "scale=-2:720",
@@ -521,11 +652,10 @@ def create_720p(input_path, output_path):
         "-crf", "23",
         "-threads", "1",
 
-        "-c:a", "copy",
+        "-map", "0:v:0", "-an", "-sn", "-dn",
 
         output_path
     ]
 
-    subprocess.run(command, check=True)
+    run_command(command, check=True)
     
-

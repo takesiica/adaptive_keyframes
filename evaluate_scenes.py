@@ -1,6 +1,5 @@
 import cv2
 from functions import get_ground_truth_times, adaptive_threshold1
-from analysis_cache import get_video_analysis
 from evaluate import evaluatef
 import numpy as np
 import os

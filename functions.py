@@ -153,7 +153,8 @@ def adaptive_histogram(video_path, window_size=45, threshold_factor=4.0, min_his
     if not ret:
         return [], [], [], []
 
-    curr_hist = calculate_histogram(frame)
+
+    prev_hist = calculate_histogram(prev_frame)
     
     frame_idx = 1
     window_diffs = []
@@ -229,10 +230,13 @@ def combine_sad_histogram(
     hist_peak_multiplier=1.5,
     min_peak_diff=0.5,
     sad_low_threshold=10.0,
-    sad_high_threshold=30.0
+    sad_high_threshold=30.0,
+    confirmation_tolerance=3
 ):
 
-    # 1. Pokreni postojeći SAD algoritam
+    # ============================================================
+    # 1. SAD detekcija
+    # ============================================================
 
     sad_changes, sad_values, sad_thresholds, sad_frames = adaptive_threshold1(
         video_path,
@@ -242,7 +246,9 @@ def combine_sad_histogram(
         peak_multiplier=sad_peak_multiplier
     )
 
-    # 2. Pokreni postojeći histogram algoritam
+    # ============================================================
+    # 2. Histogram detekcija
+    # ============================================================
 
     hist_changes, hist_values, hist_thresholds, hist_frames = adaptive_histogram(
         video_path,
@@ -253,28 +259,33 @@ def combine_sad_histogram(
         min_peak_diff=min_peak_diff
     )
 
+    # ============================================================
     # 3. Poravnanje frejmova
-
-    # Oba algoritma počinju da vraćaju podatke tek kada
-    # imaju dovoljno podataka za window.
-
-    # Zato uzimamo samo frejmove koji postoje kod oba.
+    # ============================================================
 
     sad_dict = dict(zip(sad_frames, sad_values))
     hist_dict = dict(zip(hist_frames, hist_values))
 
-    common_frames = sorted(set(sad_dict.keys()) & set(hist_dict.keys()))
+    common_frames = sorted(
+        set(sad_dict.keys()) & set(hist_dict.keys())
+    )
 
     if not common_frames:
-        return [], [], [], [], [], []
+        return ([], [], [], [], [], [], [], [])
 
-    sad = np.array([sad_dict[f] for f in common_frames], dtype=np.float32)
-    hist = np.array([hist_dict[f] for f in common_frames], dtype=np.float32 )
-    
-    # 4. Normalizacija
-    
-    # SAD i histogram nisu na istoj skali.
-    # Zato ih prvo svodimo na 0-1.
+    sad = np.array(
+        [sad_dict[f] for f in common_frames],
+        dtype=np.float32
+    )
+
+    hist = np.array(
+        [hist_dict[f] for f in common_frames],
+        dtype=np.float32
+    )
+
+    # ============================================================
+    # 4. Normalizacija SAD-a
+    # ============================================================
 
     sad_min = np.min(sad)
     sad_max = np.max(sad)
@@ -284,6 +295,10 @@ def combine_sad_histogram(
     else:
         sad_norm = np.zeros_like(sad)
 
+    # ============================================================
+    # 5. Normalizacija histograma
+    # ============================================================
+
     hist_min = np.min(hist)
     hist_max = np.max(hist)
 
@@ -292,15 +307,17 @@ def combine_sad_histogram(
     else:
         hist_norm = np.zeros_like(hist)
 
-    # 5. Računamo SAD pouzdanost
+    # ============================================================
+    # 6. Adaptivno određivanje težina
+    # ============================================================
 
     weights_sad = []
     weights_hist = []
 
     for i in range(len(common_frames)):
 
-        # Uzimamo prethodnih window_size SAD vrednosti
         start = max(0, i - window_size + 1)
+
         sad_window = sad[start:i + 1]
 
         mean_sad = np.mean(sad_window)
@@ -311,51 +328,141 @@ def combine_sad_histogram(
                 f"mean_sad={mean_sad:.2f}"
             )
 
-        # Računamo koliko je SAD blizu granicama
-        # 0 = mirna scena, 1 = dinamična scena
-        sad_ratio = (
-            (mean_sad - sad_low_threshold) /
-            (sad_high_threshold - sad_low_threshold)
+        # 0 = mirna scena
+        # 1 = dinamična scena
+
+        if sad_high_threshold > sad_low_threshold:
+
+            sad_ratio = (
+                (mean_sad - sad_low_threshold) /
+                (sad_high_threshold - sad_low_threshold)
+            )
+
+        else:
+
+            sad_ratio = 0.0
+
+        sad_ratio = np.clip(
+            sad_ratio,
+            0.0,
+            1.0
         )
 
-        # Ograničavamo vrednost na [0, 1]
-        sad_ratio = np.clip(sad_ratio, 0.0, 1.0)
+        # Adaptivne težine
 
-        # Adaptivno određivanje težina
         w_sad = 0.2 + 0.6 * sad_ratio
         w_hist = 1.0 - w_sad
 
         weights_sad.append(w_sad)
         weights_hist.append(w_hist)
 
-    weights_sad = np.array(weights_sad)
-    weights_hist = np.array(weights_hist)
+    weights_sad = np.array(
+        weights_sad,
+        dtype=np.float32
+    )
 
-    # 6. Kombinovani signal
+    weights_hist = np.array(
+        weights_hist,
+        dtype=np.float32
+    )
 
-    combined = ( weights_sad * sad_norm + weights_hist * hist_norm)
+    # ============================================================
+    # 7. Kombinovani signal
+    # ============================================================
 
-    # 7. Adaptive threshold za kombinovani signal
+    combined = (
+        weights_sad * sad_norm +
+        weights_hist * hist_norm
+    )
+
+    # ============================================================
+    # 8. Adaptive threshold kombinovanog signala
+    # ============================================================
 
     combined_thresholds = []
 
     for i in range(len(combined)):
-        
+
         if i >= window_size:
-            
-            combined_window = combined[i - window_size:i]
-            mean_combined = np.mean(combined_window)
-            std_combined = np.std(combined_window)
-            threshold = (mean_combined + sad_threshold_factor * std_combined)
-            
+
+            # SAMO PRETHODNI frejmovi
+            combined_window = combined[
+                i - window_size:i
+            ]
+
+            mean_combined = np.mean(
+                combined_window
+            )
+
+            std_combined = np.std(
+                combined_window
+            )
+
+            threshold = (
+                mean_combined +
+                sad_threshold_factor * std_combined
+            )
+
         else:
+
             threshold = np.nan
-            
-        combined_thresholds.append(threshold)
 
-    combined_thresholds = np.array(combined_thresholds)
+        combined_thresholds.append(
+            threshold
+        )
 
-    # 8. Detekcija peakova
+    combined_thresholds = np.array(
+        combined_thresholds,
+        dtype=np.float32
+    )
+
+    # ============================================================
+    # 9. Izdvajanje detektovanih promena SAD-a
+    # ============================================================
+
+    sad_change_frames = [
+        frame
+        for frame, _ in sad_changes
+    ]
+
+    # ============================================================
+    # 10. Izdvajanje detektovanih promena histograma
+    # ============================================================
+
+    hist_change_frames = [
+        frame
+        for frame, _ in hist_changes
+    ]
+
+    # ============================================================
+    # 11. Funkcija za proveru potvrde promene
+    # ============================================================
+
+    def has_nearby_change(
+        frame,
+        change_frames,
+        tolerance
+    ):
+
+        for change_frame in change_frames:
+
+            if abs(frame - change_frame) <= tolerance:
+                return True
+
+        return False
+
+    # ============================================================
+    # 12. Konačna detekcija
+    #
+    # Promena se prihvata samo ako:
+    #
+    # 1. Kombinovani signal je peak
+    # 2. SAD je detektovao promenu
+    # 3. Histogram je detektovao promenu
+    #
+    # SAD i histogram mogu biti udaljeni do
+    # confirmation_tolerance frejmova.
+    # ============================================================
 
     scene_changes = []
 
@@ -367,16 +474,74 @@ def combine_sad_histogram(
 
         threshold = combined_thresholds[i]
 
-        if (
+        frame = common_frames[i]
+
+        if np.isnan(threshold):
+            continue
+
+        # --------------------------------------------------------
+        # Kombinovani signal mora biti lokalni peak
+        # --------------------------------------------------------
+
+        combined_peak = (
             current > threshold
             and current > previous
             and current > next_value
             and current > min_peak_diff
-        ):
-            
-            scene_changes.append((common_frames[i], current))
-            
-    return (scene_changes, sad, hist, combined, combined_thresholds, common_frames, weights_sad, weights_hist)
+        )
+
+        if not combined_peak:
+            continue
+
+        # --------------------------------------------------------
+        # SAD mora da potvrdi promenu
+        # --------------------------------------------------------
+
+        sad_detected = has_nearby_change(
+            frame,
+            sad_change_frames,
+            confirmation_tolerance
+        )
+
+        if not sad_detected:
+            continue
+
+        # --------------------------------------------------------
+        # Histogram mora da potvrdi promenu
+        # --------------------------------------------------------
+
+        hist_detected = has_nearby_change(
+            frame,
+            hist_change_frames,
+            confirmation_tolerance
+        )
+
+        if not hist_detected:
+            continue
+
+        # --------------------------------------------------------
+        # Ako su sva tri uslova ispunjena,
+        # prihvatamo promenu scene.
+        # --------------------------------------------------------
+
+        scene_changes.append(
+            (frame, current)
+        )
+
+    # ============================================================
+    # 13. Rezultat
+    # ============================================================
+
+    return (
+        scene_changes,
+        sad,
+        hist,
+        combined,
+        combined_thresholds,
+        common_frames,
+        weights_sad,
+        weights_hist
+    )
 
 def scene_dynamics(all_mean_sads, frame_indices, scene_boundaries):
     scores = []
@@ -405,8 +570,7 @@ def scene_dynamics(all_mean_sads, frame_indices, scene_boundaries):
 
     return scores
 
-def interval_for_score(mean_sad, low_thresh, high_thresh, min_interval = 60, max_interval = 90
-):
+def interval_for_score(mean_sad, low_thresh, high_thresh, min_interval = 60, max_interval = 90):
     if mean_sad < low_thresh: return max_interval
 
     elif mean_sad > high_thresh: return min_interval
@@ -513,3 +677,34 @@ def generate_adaptive_gop_structure(scene, low_thresh, high_thresh, b_max=3, b_m
         "b_adapt": 0,
         "b_pyramid": "none"
     }
+
+def load_annotations(annotation_path):
+    '''
+    Učitava BBC shot anotacije. Format svakog reda: start_frame end_frame
+    '''
+    annotations = [] 
+    with open(annotation_path, "r") as f:
+
+        for line in f: 
+            line = line.strip() 
+            if not line: continue
+
+            parts = line.replace(",", " ").split()
+
+            if len(parts) >= 2: 
+                start_frame = int(parts[0]) 
+                end_frame = int(parts[1])
+
+                annotations.append((start_frame, end_frame))
+    return annotations
+
+def get_ground_truth_times(annotation_path, fps):
+    """ Iz anotacija uzima početak svakog shot-a. Prvi shot počinje na frejmu 0 i ne predstavlja promenu, 
+    pa se frejm 0 izbacuje. 
+    Frejmove pretvara u sekunde. """
+
+    annotations = load_annotations(annotation_path)
+    ground_truth_frames = [ start_frame for start_frame, end_frame in annotations if start_frame != 0 ]
+    ground_truth_times = [ frame / fps for frame in ground_truth_frames ]
+
+    return ground_truth_frames, ground_truth_times

@@ -309,33 +309,39 @@ def check_keyframes(output_path):
         output_path
     ]
 
-
-    result = subprocess.run(command, capture_output = True, text = True,
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
         check=True
     )
 
     keyframes = []
 
     for line in result.stdout.splitlines():
-        parts = line.split(",")
+        parts = line.strip().split(",")
 
-        if len(parts) >= 3:
-            time = float(parts[0])
-            key_frame = int(parts[1])
-            pict_type = parts[2]
+        if len(parts) < 3:
+            continue
 
-            if key_frame == 1:
-                keyframes.append(time)
+        try:
+            key_frame = int(parts[0])
+            time = float(parts[1])
+            pict_type = parts[2].strip()
+        except ValueError:
+            print("WARNING - nevalidna ffprobe linija:", repr(line))
+            continue
 
-                if pict_type != "I":
-                    print("WARNING:", time, key_frame, pict_type)
+        if key_frame == 1:
+            keyframes.append(time)
+
+            if pict_type != "I":
+                print("WARNING:", time, key_frame, pict_type)
 
     return keyframes
 
 def get_i_frame_count(video_path):
-
     keyframes = check_keyframes(video_path)
-
     return len(keyframes)
 
 def get_frame_type_counts(video_path):
